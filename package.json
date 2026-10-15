@@ -12,8 +12,8 @@
     "build": "bb plugin build"
   },
   "engines": {
-    "bb": ">=0.42",
-    "bbPluginSdk": ">=0.4.47"
+    "bb": ">=0.46",
+    "bbPluginSdk": ">=0.6.37"
   },
   "bb": {
     "name": "Bots Sidebar",
@@ -35,7 +35,7 @@
     "@testing-library/react": "16.3.3",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "@get-bb/plugin-sdk": "0.4.87",
+    "@get-bb/plugin-sdk": "0.6.37",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",

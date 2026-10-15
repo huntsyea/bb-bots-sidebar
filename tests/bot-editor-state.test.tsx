@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { z } from "zod";
 import { rpcContract, type BotMetadata } from "../contract";
-import { bot, personalProjectId, thread } from "./fixtures";
+import { bot, personalProjectId, thread, sidebarProject, threadActionHost } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -14,8 +14,9 @@ type Update = z.infer<typeof rpcContract.bot_update.input>;
 async function mount({ update, prepareFailures = 0, expectFailure = false }: { update?: (input: Update) => BotMetadata | Promise<BotMetadata>; prepareFailures?: number; expectFailure?: boolean } = {}) {
   let current: BotMetadata = { ...bot, id: "remote-bot", name: "Remote bot", hostId: "remote", stateReady: false, soul: "Stale cached identity" };
   const onNavigate = vi.fn();
-  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: "main", activeProjectId: "project", isCompactViewport: false, onNavigate, searchQuery: "", Original: () => null }, {
-    sidebarThreads: { projects: [{ id: "project", name: "Unrelated checkout", isPersonal: false }], threads: [thread("main", 100)] },
+  const host = threadActionHost();
+  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: "main", activeProjectId: "project", isCompactViewport: false, onNavigate, searchQuery: "" }, { ...host.options,
+    sidebarThreads: { projects: [sidebarProject("project", "Unrelated checkout")], threads: [thread("main", 100)] },
     rpc: {
       bots_list: () => ({ bots: [{ ...current }], hosts: [], sections: [], projects: [], warnings: [], personalProjectId, threadBindings: [{ botId: current.id, threadId: "main" }] }),
       bot_prepare: () => {
@@ -31,6 +32,7 @@ async function mount({ update, prepareFailures = 0, expectFailure = false }: { u
       },
     },
   });
+  host.track(slot);
   async function open() { fireEvent.contextMenu(await slot.findByText(current.name)); expect(slot.queryByRole("menuitem", { name: "View bot state…" })).toBeNull(); fireEvent.click(await slot.findByRole("menuitem", { name: "Edit bot…" })); }
   await open();
   const dialog = expectFailure ? null : await slot.findByRole("dialog", { name: "Edit bot" });

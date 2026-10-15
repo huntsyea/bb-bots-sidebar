@@ -141,8 +141,8 @@ it("lists named owned/joined projects, visibility and inherited activity beyond 
   const {host,a,b,run}=await setup();
   host.store.changeProjectRole(a.id,"project","own");
   host.store.save({...host.store.require(b.id),hiddenUntilActivity:true});
-  const idle = makeThreadResponse({id:a.id,status:"idle",runtime:{displayStatus:"idle",hostReconnectGraceExpiresAt:null}});
-  const active = makeThreadResponse({id:"child",parentThreadId:b.id,status:"active",runtime:{displayStatus:"active",hostReconnectGraceExpiresAt:null}});
+  const idle = makeThreadResponse({id:a.id,status:"idle",runtime:{displayStatus:"idle"}});
+  const active = makeThreadResponse({id:"child",parentThreadId:b.id,status:"active",runtime:{displayStatus:"active"}});
   const rows=[idle,...Array.from({length:99},(_,i)=>makeThreadResponse({id:`unbound-${i}`})),active];
   host.harness.inspection.sdk.stub("threads.list",async (args?: {offset?: number; limit?: number}) => rows.slice(args?.offset ?? 0,(args?.offset ?? 0)+(args?.limit ?? 100)));
   const data=JSON.parse((await run(["list","--json"])).stdout!);
@@ -158,8 +158,8 @@ it("prioritizes waiting over work, ignores archived activity, and preserves unav
   host.store.save({...host.store.require(a.id),linkedProjectIds:["missing"]});
   const rows=[
     {...makeThreadResponse({id:a.id}),hasPendingInteraction:true},
-    makeThreadResponse({id:"busy",parentThreadId:a.id,runtime:{displayStatus:"active",hostReconnectGraceExpiresAt:null}}),
-    makeThreadResponse({id:"archived",parentThreadId:a.id,archivedAt:1,runtime:{displayStatus:"active",hostReconnectGraceExpiresAt:null}}),
+    makeThreadResponse({id:"busy",parentThreadId:a.id,runtime:{displayStatus:"active"}}),
+    makeThreadResponse({id:"archived",parentThreadId:a.id,archivedAt:1,runtime:{displayStatus:"active"}}),
   ];
   host.harness.inspection.sdk.stub("threads.list",async()=>rows);
   let data=JSON.parse((await run(["list","--json"])).stdout!);

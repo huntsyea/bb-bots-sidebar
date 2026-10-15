@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { rpcContract, type BotMetadata, type ProjectOwner } from "../contract";
-import { bot, personalProjectId, request, thread } from "./fixtures";
+import { bot, personalProjectId, request, thread, sidebarProject, sidebarActionCalls, threadActionHost } from "./fixtures";
 
 const composer = vi.hoisted(() => ({ props: null as NewThreadComposerProps | null }));
 vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
@@ -28,14 +28,16 @@ async function mount({ bots = [bot], owners = [], rows = [thread("main", 100), t
 } = {}) {
   const state = { bots, owners, personalId: personalProjectId };
   const onNavigate = vi.fn();
-  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: "main", activeProjectId: "project", isCompactViewport: false, onNavigate, searchQuery: "", Original: () => null }, {
-    sidebarThreads: { projects: [{ id: "project", name: "Member project", isPersonal: false }, { id: "owned", name: "Owned project", isPersonal: false }], threads: rows },
+  const host = threadActionHost();
+  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: "main", activeProjectId: "project", isCompactViewport: false, onNavigate, searchQuery: "" }, { ...host.options,
+    sidebarThreads: { projects: [sidebarProject("project", "Member project"), sidebarProject("owned", "Owned project")], threads: rows },
     rpc: {
       bots_list: () => { beforeList?.(); return rpcContract.bots_list.output.parse({ bots: state.bots, hosts: [{ id: "host", name: "Local", connected: true }], sections: [], projects: [{ id: "project", name: "Member project" }, { id: "owned", name: "Owned project" }], threadBindings: rows.map(row => ({ botId: bot.id, threadId: row.id })), warnings: [], personalProjectId: state.personalId, projectOwners: state.owners }); },
       bot_prepare: async (raw) => { await prepare?.(); const { botId } = rpcContract.bot_prepare.input.parse(raw); return state.bots.find(entry => entry.id === botId) ?? bot; },
       conversation_create: () => ({ threadId: "created" }),
     },
   });
+  host.track(slot);
   await waitFor(() => expect(slot.queryByText("Loading bots…")).toBeNull());
   return { slot, state, onNavigate, plus: () => slot.getByRole("button", { name: `New conversation with ${bots[0]!.name}` }) };
 }
@@ -50,7 +52,7 @@ it("gives every row one inline + before its disclosure without opening main or e
   fireEvent.click(plus());
   await slot.findByRole("dialog", { name: "New conversation" });
   expect(disclosure.getAttribute("aria-expanded")).toBe("false");
-  expect(slot.inspection.sidebarActionCalls).toEqual([]); expect(slot.inspection.navigateCalls).toEqual([]); expect(onNavigate).not.toHaveBeenCalled();
+  expect(sidebarActionCalls(slot)).toEqual([]); expect(slot.inspection.navigateCalls).toEqual([]); expect(onNavigate).not.toHaveBeenCalled();
   fireEvent.click(slot.getByRole("button", { name: "Close" }));
   expect(slot.inspection.rpcCalls.every(call => ["bots_list", "bot_prepare"].includes(call.method))).toBe(true);
 });

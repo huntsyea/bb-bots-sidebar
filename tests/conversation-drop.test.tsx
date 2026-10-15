@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { bot, personalProjectId, thread } from "./fixtures";
+import { bot, personalProjectId, thread, sidebarProject, sidebarActionCalls, threadActionHost } from "./fixtures";
 
 // The SDK test shim records "open" immediately on pointerdown; the real host
 // only engages a split after leaving the sidebar. Keep its gesture hook wired
@@ -23,8 +23,9 @@ async function mount(fail = false, afterAssignment?: () => Promise<void>) {
   const rows = [thread("main-a", 100), thread("main-b", 100), thread("chat", 90), thread("child", 80, { parentThreadId: "chat" }), thread("assigned-child", 70, { parentThreadId: "chat" })];
   const bindings = [{ threadId: "main-a", botId: "atlas" }, { threadId: "main-b", botId: "nova" }, { threadId: "assigned-child", botId: "atlas" }];
   const onNavigate = vi.fn();
-  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: "main-a", activeProjectId: "project", isCompactViewport: false, onNavigate, searchQuery: "", Original: () => null }, {
-    sidebarThreads: { projects: [{ id: "project", name: "Work project", isPersonal: false }], threads: rows },
+  const host = threadActionHost();
+  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: "main-a", activeProjectId: "project", isCompactViewport: false, onNavigate, searchQuery: "" }, { ...host.options,
+    sidebarThreads: { projects: [sidebarProject("project", "Work project")], threads: rows },
     rpc: {
       bots_list: async () => {
         if (assigned) await afterAssignment?.();
@@ -42,6 +43,7 @@ async function mount(fail = false, afterAssignment?: () => Promise<void>) {
       },
     },
   });
+  host.track(slot);
   await slot.findByText("Atlas");
   const source = slot.container.querySelector<HTMLElement>('[data-sidebar-thread-id="chat"]')!;
   const target = slot.container.querySelector<HTMLElement>('[data-bot-drop-target="nova"]')!;
@@ -63,13 +65,13 @@ it("drags a project-associated private chat onto a bot without prior membership 
   await waitFor(() => expect(slot.container.querySelector('.recent-row [data-sidebar-thread-id="chat"]')).toBeNull());
   expect(slot.inspection.rpcCalls.filter(call => call.method === "conversation_assign")).toEqual([{ method: "conversation_assign", input: { threadId: "chat", botId: "nova", placeFirst: false } }]);
   expect(slot.inspection.rpcCalls.some(call => call.method === "bots_reorder" || call.method === "main_set")).toBe(false);
-  expect(slot.inspection.sidebarActionCalls).toEqual([]); expect(onNavigate).not.toHaveBeenCalled();
+  expect(sidebarActionCalls(slot)).toEqual([]); expect(onNavigate).not.toHaveBeenCalled();
   expect(split.onPointerDown).toHaveBeenCalledOnce();
   expect(bindings.find(entry => entry.threadId === "assigned-child")?.botId).toBe("atlas");
   expect(document.querySelector(".conversation-drag-ghost")).toBeNull();
   await waitFor(() => expect(target.querySelector(".conversation-disclosure")?.getAttribute("aria-expanded")).toBe("true"));
   fireEvent.click(target.querySelector("button")!);
-  expect(slot.inspection.sidebarActionCalls).toContainEqual({ method: "open", threadId: "main-b", options: undefined });
+  expect(sidebarActionCalls(slot)).toContainEqual({ method: "open", threadId: "main-b", options: undefined });
 });
 
 it("Shift promotes an outside drop and unfolds, updating the hint without pointer movement", async () => {
@@ -82,7 +84,7 @@ it("Shift promotes an outside drop and unfolds, updating the hint without pointe
   await waitFor(() => expect(target.querySelector(".conversation-disclosure")?.getAttribute("aria-expanded")).toBe("true"));
   expect(slot.inspection.rpcCalls).toContainEqual({ method: "conversation_assign", input: { threadId: "chat", botId: "nova", placeFirst: true } });
   fireEvent.click(target.querySelector("button")!);
-  expect(slot.inspection.sidebarActionCalls).toContainEqual({ method: "open", threadId: "chat", options: undefined });
+  expect(sidebarActionCalls(slot)).toContainEqual({ method: "open", threadId: "chat", options: undefined });
 });
 
 it("Escape cancels the drop and suppresses the eventual release click", async () => {
@@ -90,7 +92,7 @@ it("Escape cancels the drop and suppresses the eventual release click", async ()
   fireEvent.keyDown(document, { key: "Escape" }); expect(document.querySelector(".conversation-drag-ghost")).toBeNull();
   up(); fireEvent.click(target.querySelector("button")!);
   expect(slot.inspection.rpcCalls.some(call => call.method === "conversation_assign")).toBe(false);
-  expect(slot.inspection.sidebarActionCalls).toEqual([]); expect(onNavigate).not.toHaveBeenCalled();
+  expect(sidebarActionCalls(slot)).toEqual([]); expect(onNavigate).not.toHaveBeenCalled();
 });
 
 it("drops on the face to promote without Shift, switching feedback between both zones", async () => {
@@ -107,7 +109,7 @@ it("drops on the face to promote without Shift, switching feedback between both 
   move(face); up();
   await waitFor(() => expect(target.querySelector(".conversation-disclosure")?.getAttribute("aria-expanded")).toBe("true"));
   expect(slot.inspection.rpcCalls).toContainEqual({ method: "conversation_assign", input: { threadId: "chat", botId: "nova", placeFirst: true } });
-  expect(slot.inspection.sidebarActionCalls).toEqual([]);
+  expect(sidebarActionCalls(slot)).toEqual([]);
 });
 
 it("does not change drop zones unseen at release", async () => {
@@ -132,7 +134,7 @@ it("unfolds immediately after append succeeds and reveals the added row after a 
     const added = target.closest(".project-group")!.querySelector('[data-sidebar-thread-id="chat"]');
     expect(added).not.toBeNull();
     expect(scroll.mock.contexts).toContain(added);
-    expect(slot.inspection.sidebarActionCalls).toEqual([]);
+    expect(sidebarActionCalls(slot)).toEqual([]);
   } finally {
     release();
     if (original) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", original);
@@ -143,7 +145,7 @@ it("unfolds immediately after append succeeds and reveals the added row after a 
 it("normal clicks still navigate, but touch scrolling never starts assignment dragging", async () => {
   const { slot, source, target } = await mount();
   down(source); hit = source; fireEvent.pointerUp(window, { pointerId: 1, clientX: 40, clientY: 300 }); fireEvent.click(source);
-  expect(slot.inspection.sidebarActionCalls).toContainEqual({ method: "open", threadId: "chat", options: { split: false } });
+  expect(sidebarActionCalls(slot)).toContainEqual({ method: "open", threadId: "chat", options: { split: false } });
   down(source, "touch"); move(target); up();
   expect(document.querySelector(".conversation-drag-ghost")).toBeNull();
   expect(slot.inspection.rpcCalls.some(call => call.method === "conversation_assign")).toBe(false);

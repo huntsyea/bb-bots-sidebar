@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { rpcContract, type BotMetadata } from "../contract";
-import { bot, personalProjectId } from "./fixtures";
+import { bot, personalProjectId, threadActionHost } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 afterEach(cleanup);
@@ -13,7 +13,8 @@ async function mount({ projectFailures = 0, botFailures = 0, offline = false } =
   const projects = [{ id: "existing", name: "Existing work" }];
   const sections: { id: string; name: string; order: number }[] = [];
   const onNavigate = vi.fn();
-  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: null, activeProjectId: null, isCompactViewport: false, onNavigate, searchQuery: "", Original: () => null }, {
+  const host = threadActionHost();
+  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: null, activeProjectId: null, isCompactViewport: false, onNavigate, searchQuery: "" }, { ...host.options,
     sidebarThreads: { projects: [], threads: [] }, rpc: {
       bots_list: () => ({ bots, projects, sections, hosts: [{ id: "host", name: "Local", connected: !offline }, { id: "remote", name: "Remote", connected: !offline }], personalProjectId, warnings: [], threadBindings: [], projectOwners: [] }),
       section_create: (raw) => { const { name } = rpcContract.section_create.input.parse(raw); const section = { id: "section", name, order: 0 }; sections.push(section); return section; },
@@ -23,6 +24,7 @@ async function mount({ projectFailures = 0, botFailures = 0, offline = false } =
       bot_prepare: () => bots[0],
     },
   });
+  host.track(slot);
   await waitFor(() => expect(slot.queryByText("Loading bots…")).toBeNull());
   return { slot, bots, projects, onNavigate };
 }
