@@ -1,7 +1,8 @@
 # Fork notes
 
 Local fork of [tobi/bb-bots-sidebar](https://github.com/tobi/bb-bots-sidebar).
-`main` is our branch. The `upstream` remote is fetch-only (push is disabled).
+`main` is our branch, pushed to `origin` ([huntsyea/bb-bots-sidebar](https://github.com/huntsyea/bb-bots-sidebar)).
+The `upstream` remote is fetch-only (push is disabled).
 
 - **Base:** upstream `v1.0.0`
 - **Installed in BB from:** this directory (`bb plugin install <path>`)
@@ -24,5 +25,6 @@ Keep the plugin id `bots-sidebar` and the KV key `sidebar:code-provider`. Changi
 git merge vX.Y.Z                 # upstream releases are tags
 # resolve conflicts, keeping both upstream's change and ours above
 npx tsc --noEmit && npm test     # 37 private-state/server tests failed upstream before the merge too
+git push                         # to origin (our fork)
 npm run build && bb plugin reload bots-sidebar
 ```
