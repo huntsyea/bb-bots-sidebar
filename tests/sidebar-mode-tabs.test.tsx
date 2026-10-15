@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { modeForProvider } from "../lib/sidebar-mode";
-import { bot, personalProjectId, thread } from "./fixtures";
+import { bot, personalProjectId, sidebarProject, thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 let body: HTMLElement;
@@ -80,10 +80,10 @@ it("re-anchors when the sidebar re-renders its content", async () => {
 
 it("shows only bots by default and opts into unassigned chats from the + menu", async () => {
   const slot = renderSlot(app.threadLists[0]!, {
-    activeThreadId: null, activeProjectId: null, isCompactViewport: false, onNavigate: vi.fn(), searchQuery: "", Original: () => null,
+    activeThreadId: null, activeProjectId: null, isCompactViewport: false, onNavigate: vi.fn(), searchQuery: "",
   }, {
     sidebarThreads: {
-      projects: [{ id: "project", name: "Project", isPersonal: false }, { id: "personal", name: "Personal", isPersonal: true }],
+      projects: [sidebarProject("project", "Project"), sidebarProject("personal", "Personal", true)],
       threads: [thread("main", 1000), thread("chat", 200, { projectId: "personal", environment: null })],
     },
     rpc: { bots_list: () => ({ personalProjectId, bots: [bot], hosts: [{ id: "host", name: "Local", connected: true }], sections: [], projects: [{ id: "project", name: "Project" }], threadBindings: [{ threadId: "main", botId: bot.id }], warnings: [] }) },
