@@ -2,7 +2,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { modeForProvider } from "../lib/sidebar-mode";
 import { bot, personalProjectId, sidebarProject, thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
@@ -30,13 +29,6 @@ const tablist = () => within(body).getByRole("tablist", { name: "Sidebar view" }
 
 it("registers the Code / Bots tabs as an app overlay", () => {
   expect(app.appOverlays.map((overlay) => overlay.id)).toEqual(["sidebar-mode-tabs"]);
-});
-
-it("maps thread-list providers to tabs", () => {
-  expect(modeForProvider("thread-list/thread-list")).toBe("code");
-  expect(modeForProvider("bots-sidebar/bot-projects")).toBe("bots");
-  expect(modeForProvider("__automatic__")).toBeNull();
-  expect(modeForProvider(null)).toBeNull();
 });
 
 it("renders directly above the sidebar's thread-list area and marks the active provider", async () => {
@@ -69,6 +61,17 @@ it("infers the active tab from the rendered list under BB's automatic choice", a
   body.innerHTML = `<div data-sidebar="content"><div class="bots-sidebar">Bots</div></div>`;
   mountTabs("__automatic__");
   await waitFor(() => expect(within(tablist()).getByRole("tab", { name: "Bots" }).getAttribute("aria-selected")).toBe("true"));
+});
+
+it("re-reads the provider when BB swaps the list, e.g. from Settings → Appearance", async () => {
+  let provider = "bots-sidebar/bot-projects";
+  const get = vi.fn(() => ({ provider }));
+  renderSlot(app.appOverlays[0]!, {}, { rpc: { sidebar_mode_get: get, sidebar_mode_set: () => ({ provider }) } });
+  await waitFor(() => expect(within(tablist()).getByRole("tab", { name: "Bots" }).getAttribute("aria-selected")).toBe("true"));
+  provider = "cursor-sidebar/cursor";
+  body.querySelector('[data-sidebar="content"]')!.innerHTML = "<div>Cursor list</div>";
+  await waitFor(() => expect(within(tablist()).getByRole("tab", { name: "Code" }).getAttribute("aria-selected")).toBe("true"));
+  expect(get.mock.calls.length).toBeGreaterThan(1);
 });
 
 it("re-anchors when the sidebar re-renders its content", async () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../contract";
@@ -13,19 +13,29 @@ const SIDEBAR_BODY = '[data-testid="app-sidebar-body"]';
 const SIDEBAR_CONTENT = ':scope > [data-sidebar="content"]';
 const HOST_ATTRIBUTE = "data-bots-sidebar-mode-tabs";
 
-/** Keeps one host element mounted just above the sidebar's thread-list area. */
-function useSidebarTabsHost() {
+/**
+ * Keeps one host element mounted just above the sidebar's thread-list area,
+ * and reports when BB swaps the list inside it (a provider change, including
+ * one made in Settings → Appearance).
+ */
+function useSidebarTabsHost(onListChange: () => void) {
   const [host, setHost] = useState<HTMLElement | null>(null);
+  const listChanged = useRef(onListChange);
+  listChanged.current = onListChange;
   useEffect(() => {
     const element = document.createElement("div");
     element.setAttribute(HOST_ATTRIBUTE, "");
     let frame = 0;
+    let list: Element | null | undefined;
     const place = () => {
       frame = 0;
       const content = document.querySelector(SIDEBAR_BODY)?.querySelector<HTMLElement>(SIDEBAR_CONTENT);
       if (!content) { element.remove(); setHost(null); return; }
       if (element.nextElementSibling !== content) content.before(element);
       setHost(element);
+      const current = content.firstElementChild;
+      if (list !== undefined && current !== list) listChanged.current();
+      list = current;
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(place); };
     place();
@@ -37,7 +47,7 @@ function useSidebarTabsHost() {
 }
 
 // With BB's automatic provider choice, read the active tab off the list BB
-// actually rendered: ours carries .bots-sidebar, anything else counts as Code.
+// actually rendered: ours carries .bots-sidebar, any other list is Code.
 function renderedMode(host: HTMLElement, provider: string | null): SidebarMode | null {
   if (provider === null) return null;
   return host.nextElementSibling?.querySelector(".bots-sidebar") ? "bots" : "code";
@@ -73,20 +83,22 @@ export function SidebarModeTabBar({ mode, pending, onSelect }: { mode: SidebarMo
 
 /**
  * Code / Bots switcher, modelled on the Chat / Code toggle in the Claude app.
- * Code pins BB's own thread list; Bots pins this plugin's bot list. The choice
- * is BB's `sidebar.threadListProvider` preference, so it is the same setting
- * as Settings → Appearance → Sidebar and syncs across windows.
+ * Bots pins this plugin's list; Code pins whichever other list the user chose
+ * in Settings → Appearance → Sidebar (BB's own list until they choose one).
+ * Both write BB's `sidebar.threadListProvider` preference, so the choice syncs
+ * across windows.
  */
 export function SidebarModeTabs() {
   const rpc = useRpc<typeof rpcContract>();
-  const host = useSidebarTabsHost();
   const portalScope = usePortalScopeProps();
   const [provider, setProvider] = useState<string | null>(null);
   const [pending, setPending] = useState<SidebarMode | null>(null);
 
+  // Reading also lets the server remember a non-Bots list as the Code tab's.
   const refresh = useCallback(() => {
     rpc.call("sidebar_mode_get", null).then(({ provider }) => setProvider(provider), () => {});
   }, [rpc]);
+  const host = useSidebarTabsHost(refresh);
   useEffect(() => {
     refresh();
     window.addEventListener("focus", refresh);
