@@ -74,6 +74,40 @@ it("re-reads the provider when BB swaps the list, e.g. from Settings → Appeara
   expect(get.mock.calls.length).toBeGreaterThan(1);
 });
 
+it("follows a list swap under BB's automatic choice without a provider change", async () => {
+  body.innerHTML = `<div data-sidebar="content"><div>BB list</div></div>`;
+  mountTabs("__automatic__");
+  await waitFor(() => expect(within(tablist()).getByRole("tab", { name: "Code" }).getAttribute("aria-selected")).toBe("true"));
+  body.querySelector('[data-sidebar="content"]')!.innerHTML = `<div class="bots-sidebar">Bots</div>`;
+  await waitFor(() => expect(within(tablist()).getByRole("tab", { name: "Bots" }).getAttribute("aria-selected")).toBe("true"));
+});
+
+it("ignores a slow refresh that settles after a newer tab choice", async () => {
+  let releaseRefresh!: (value: { provider: string }) => void;
+  let gets = 0;
+  const get = vi.fn(() => ++gets === 1 ? { provider: "thread-list/thread-list" } : new Promise<{ provider: string }>((resolve) => { releaseRefresh = resolve; }));
+  renderSlot(app.appOverlays[0]!, {}, { rpc: { sidebar_mode_get: get, sidebar_mode_set: () => ({ provider: "bots-sidebar/bot-projects" }) } });
+  await waitFor(() => expect(within(tablist()).getByRole("tab", { name: "Code" }).getAttribute("aria-selected")).toBe("true"));
+  window.dispatchEvent(new Event("focus"));
+  await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+  fireEvent.click(within(tablist()).getByRole("tab", { name: "Bots" }));
+  await waitFor(() => expect(within(tablist()).getByRole("tab", { name: "Bots" }).getAttribute("aria-selected")).toBe("true"));
+  releaseRefresh({ provider: "thread-list/thread-list" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(within(tablist()).getByRole("tab", { name: "Bots" }).getAttribute("aria-selected")).toBe("true");
+});
+
+it("keeps focus on the tab after an arrow-key switch swaps the list", async () => {
+  mountTabs("thread-list/thread-list");
+  await waitFor(() => expect(within(tablist()).getByRole("tab", { name: "Code" }).getAttribute("aria-selected")).toBe("true"));
+  within(tablist()).getByRole("tab", { name: "Code" }).focus();
+  fireEvent.keyDown(within(tablist()).getByRole("tab", { name: "Code" }), { key: "ArrowRight" });
+  body.querySelector('[data-sidebar="content"]')!.innerHTML = `<div class="bots-sidebar">Bots</div>`;
+  await waitFor(() => expect(within(tablist()).getByRole("tab", { name: "Bots" }).getAttribute("aria-selected")).toBe("true"));
+  await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  expect(document.activeElement?.textContent).toBe("Bots");
+});
+
 it("re-anchors when the sidebar re-renders its content", async () => {
   mountTabs("thread-list/thread-list");
   await waitFor(() => tablist());

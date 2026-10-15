@@ -306,15 +306,16 @@ function RowContextMenu({ children, items }: { children: ReactElement; items: Me
   </ContextMenu.Root>;
 }
 
-function ConversationContextMenu({ children, thread, actions, onNavigate, items = [] }: {
+function ConversationContextMenu({ children, thread, actions, archive, onNavigate, items = [] }: {
   children: ReactElement;
   thread: PluginSidebarThread;
   actions: SidebarThreadActions;
+  /** The row's archive action from useArchiveThread; null while bb offers none. */
+  archive: (() => void) | null;
   onNavigate: () => void;
   items?: MenuItem[];
 }) {
   const [renaming, setRenaming] = useState(false);
-  const archive = useArchiveThread(thread);
   return <>
     <RowContextMenu items={[
       ...items,
@@ -354,6 +355,8 @@ function ThreadRow({ thread, siblings, childrenByParent, activePath, actions, ac
   thread: PluginSidebarThread; siblings: PluginSidebarThread[]; childrenByParent: Map<string, PluginSidebarThread[]>; activePath: Set<string>; actions: SidebarThreadActions; activeThreadId: string | null; onNavigate: () => void; onReorder: ReorderConversation; onNewInWorktree: (thread: PluginSidebarThread) => void; onFork: (thread: PluginSidebarThread) => void; onNest: (threadId: string, parentThreadId: string) => void; onArchive: (threadId: string) => void; reorderDrag: ReturnType<typeof useConversationReorder>;
 }) {
   const split = experimental_useSidebarThreadSplit(thread.id);
+  // One lookup per row, shared by the inline button and the context menu.
+  const archive = useArchiveThread(thread);
   const children = childrenByParent.get(thread.id) ?? [];
   const branch = useConversationBranch(thread.id, activeThreadId, activePath);
   const title = thread.title ?? thread.titleFallback ?? "Untitled conversation";
@@ -380,7 +383,7 @@ function ThreadRow({ thread, siblings, childrenByParent, activePath, actions, ac
       if (event.shiftKey) onNest(source, thread.id);
       else onReorder(source, thread.id, position(event));
     }
-  }}><ConversationContextMenu thread={thread} actions={actions} onNavigate={onNavigate} items={[
+  }}><ConversationContextMenu thread={thread} actions={actions} archive={archive} onNavigate={onNavigate} items={[
     { label: "New conversation in worktree…", action: () => onNewInWorktree(thread) },
     { label: "Fork in same environment…", action: () => onFork(thread) },
     { label: "Move to top", action: () => onReorder(thread.id, siblings[0]!.id, "before"), disabled: siblings[0]?.id === thread.id },
@@ -389,7 +392,7 @@ function ThreadRow({ thread, siblings, childrenByParent, activePath, actions, ac
       <a {...split.splitProps} onPointerDown={(event) => { split.splitProps.onPointerDown?.(event); reorderDrag.begin(thread, event); }} ref={branch.rowRef} role="link" tabIndex={0} aria-current={activeThreadId === thread.id ? "page" : undefined} onKeyDown={(event) => { if (event.key === "Enter") { actions.open(thread.id, { split: event.metaKey || event.ctrlKey }); onNavigate(); } }} data-sidebar-thread-shortcut-target="" data-sidebar-thread-id={thread.id} className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 py-1 pr-1" onClick={(event) => { event.preventDefault(); actions.open(thread.id, { split: event.metaKey || event.ctrlKey }); onNavigate(); }}>
         <ConversationStatusIcon thread={thread} /><span className="min-w-0 flex-1 truncate">{title}</span>
       </a>
-      <ConversationArchiveButton thread={thread} onArchive={onArchive} />
+      <ConversationArchiveButton thread={thread} archive={archive} onArchive={onArchive} />
       <BranchToggle title={title} count={children.length} expanded={branch.expanded} childrenId={branch.childrenId} onToggle={branch.toggle} />
     </div>
   </ConversationContextMenu>{children.length ? <ul id={branch.childrenId} className="conversation-children" hidden={!branch.expanded}>{branch.expanded ? children.map((child) => <ThreadRow key={child.id} thread={child} siblings={children} childrenByParent={childrenByParent} activePath={activePath} actions={actions} activeThreadId={activeThreadId} onNavigate={onNavigate} onReorder={onReorder} onNewInWorktree={onNewInWorktree} onFork={onFork} onNest={onNest} onArchive={onArchive} reorderDrag={reorderDrag} />) : null}</ul> : null}</li>;
@@ -523,13 +526,15 @@ function RecentRow({
   draggingThreadId: string | null;
 }) {
   const split = experimental_useSidebarThreadSplit(thread.id);
+  // One lookup per row, shared by the inline button and the context menu.
+  const archive = useArchiveThread(thread);
   const children = childrenByParent.get(thread.id) ?? [];
   const branch = useConversationBranch(thread.id, activeThreadId, activePath);
   const title = thread.title ?? thread.titleFallback ?? "Untitled conversation";
   const detail = thread.environment?.branchName ?? thread.host?.name ?? "Personal conversation";
   return (
     <li>
-      <ConversationContextMenu thread={thread} actions={actions} onNavigate={onNavigate} items={[{ label: "Assign to bot…", action: () => onAssign(thread) }]}>
+      <ConversationContextMenu thread={thread} actions={actions} archive={archive} onNavigate={onNavigate} items={[{ label: "Assign to bot…", action: () => onAssign(thread) }]}>
       <div className="recent-row flex min-h-6 items-center rounded-md px-1 hover:bg-state-hover" data-conversation-dragging={draggingThreadId === thread.id} aria-current={activeThreadId === thread.id ? "page" : undefined} data-active-descendant={!branch.expanded && branch.containsActive}>
       <a
         {...split.splitProps}
@@ -558,7 +563,7 @@ function RecentRow({
           <span className="block truncate text-[8px] leading-[10px] text-muted-foreground">{detail}</span>
         </span>
       </a>
-      <ConversationArchiveButton thread={thread} onArchive={onArchive} />
+      <ConversationArchiveButton thread={thread} archive={archive} onArchive={onArchive} />
       <BranchToggle title={title} count={children.length} expanded={branch.expanded} childrenId={branch.childrenId} onToggle={branch.toggle} />
       </div>
       </ConversationContextMenu>

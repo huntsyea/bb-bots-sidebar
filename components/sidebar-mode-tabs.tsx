@@ -14,36 +14,44 @@ const SIDEBAR_CONTENT = ':scope > [data-sidebar="content"]';
 const HOST_ATTRIBUTE = "data-bots-sidebar-mode-tabs";
 
 /**
- * Keeps one host element mounted just above the sidebar's thread-list area,
- * and reports when BB swaps the list inside it (a provider change, including
- * one made in Settings → Appearance).
+ * Keeps one host element mounted just above the sidebar's thread-list area.
+ * `listKey` changes, and `onListChange` fires, whenever BB swaps the list
+ * inside it (a provider change, including one made in Settings → Appearance).
  */
 function useSidebarTabsHost(onListChange: () => void) {
-  const [host, setHost] = useState<HTMLElement | null>(null);
+  const [state, setState] = useState<{ host: HTMLElement | null; listKey: number }>({ host: null, listKey: 0 });
   const listChanged = useRef(onListChange);
   listChanged.current = onListChange;
   useEffect(() => {
     const element = document.createElement("div");
     element.setAttribute(HOST_ATTRIBUTE, "");
     let frame = 0;
+    let content: HTMLElement | null = null;
     let list: Element | null | undefined;
     const place = () => {
       frame = 0;
-      const content = document.querySelector(SIDEBAR_BODY)?.querySelector<HTMLElement>(SIDEBAR_CONTENT);
-      if (!content) { element.remove(); setHost(null); return; }
+      content = document.querySelector(SIDEBAR_BODY)?.querySelector<HTMLElement>(SIDEBAR_CONTENT) ?? null;
+      if (!content) {
+        element.remove();
+        setState((current) => current.host ? { ...current, host: null } : current);
+        return;
+      }
       if (element.nextElementSibling !== content) content.before(element);
-      setHost(element);
       const current = content.firstElementChild;
-      if (list !== undefined && current !== list) listChanged.current();
+      const swapped = list !== undefined && current !== list;
       list = current;
+      setState((previous) => previous.host === element && !swapped ? previous : { host: element, listKey: previous.listKey + (swapped ? 1 : 0) });
+      if (swapped) listChanged.current();
     };
-    const schedule = () => { if (!frame) frame = requestAnimationFrame(place); };
+    // The observer sees every app mutation (streaming messages included), so
+    // skip the frame and DOM query unless the anchor or the list itself moved.
+    const unchanged = () => content !== null && content.isConnected && element.nextElementSibling === content && content.firstElementChild === list;
+    const observer = new MutationObserver(() => { if (!frame && !unchanged()) frame = requestAnimationFrame(place); });
     place();
-    const observer = new MutationObserver(schedule);
     observer.observe(document.body, { childList: true, subtree: true });
     return () => { observer.disconnect(); if (frame) cancelAnimationFrame(frame); element.remove(); };
   }, []);
-  return host;
+  return state;
 }
 
 // With BB's automatic provider choice, read the active tab off the list BB
@@ -94,11 +102,19 @@ export function SidebarModeTabs() {
   const [provider, setProvider] = useState<string | null>(null);
   const [pending, setPending] = useState<SidebarMode | null>(null);
 
+  // Responses can arrive out of order (a focus refresh racing a tab click);
+  // only the latest request may update the provider.
+  const latestRequest = useRef(0);
+  const apply = useCallback((request: Promise<{ provider: string }>) => {
+    const id = ++latestRequest.current;
+    return request.then(({ provider }) => { if (id === latestRequest.current) setProvider(provider); });
+  }, []);
   // Reading also lets the server remember a non-Bots list as the Code tab's.
   const refresh = useCallback(() => {
-    rpc.call("sidebar_mode_get", null).then(({ provider }) => setProvider(provider), () => {});
-  }, [rpc]);
-  const host = useSidebarTabsHost(refresh);
+    apply(rpc.call("sidebar_mode_get", null)).catch(() => {});
+  }, [apply, rpc]);
+  // A list swap re-renders this component, so renderedMode() sees the new list.
+  const { host } = useSidebarTabsHost(refresh);
   useEffect(() => {
     refresh();
     window.addEventListener("focus", refresh);
@@ -108,8 +124,8 @@ export function SidebarModeTabs() {
   const select = (mode: SidebarMode) => {
     if (pending || modeForProvider(provider) === mode) return;
     setPending(mode);
-    rpc.call("sidebar_mode_set", { mode })
-      .then(({ provider }) => setProvider(provider), refresh)
+    apply(rpc.call("sidebar_mode_set", { mode }))
+      .catch(refresh)
       .finally(() => setPending(null));
   };
 

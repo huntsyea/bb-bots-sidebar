@@ -355,3 +355,6 @@
   outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-tab { transition: none; }
+}

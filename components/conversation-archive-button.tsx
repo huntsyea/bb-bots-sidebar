@@ -1,11 +1,10 @@
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
-import { useArchiveThread } from "../hooks/use-sidebar-thread-actions";
 import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
-export function ConversationArchiveButton({ thread, onArchive }: { thread: PluginSidebarThread; onArchive?: (threadId: string) => void }) {
+/** `archive` is the row's useArchiveThread action; null disables the button. */
+export function ConversationArchiveButton({ thread, archive, onArchive }: { thread: PluginSidebarThread; archive: (() => void) | null; onArchive?: (threadId: string) => void }) {
   const title = thread.title ?? thread.titleFallback ?? "Untitled conversation";
-  const archive = useArchiveThread(thread);
   return <Tooltip>
     <TooltipTrigger asChild>
       <Button type="button" variant="ghost" size="icon" className="conversation-archive h-6 w-6 shrink-0 p-0 text-muted-foreground" aria-label={`Archive ${title}`} data-archive-thread-id={thread.id}
