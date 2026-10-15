@@ -13,7 +13,7 @@ import { listBotConversations } from "./lib/bot-conversations";
 import { botProjectContext } from "./lib/project-context";
 import { BOT_GUIDANCE, botInstructions } from "./lib/bot-instructions";
 import { MEMORY_MAX_CHARS, validateMemory } from "./lib/memory-limit";
-import { providerForMode, rememberedCodeProvider } from "./lib/sidebar-mode";
+import { providerForMode, rememberedThreadsProvider } from "./lib/sidebar-mode";
 export { rpcContract, avatarSchema } from "./contract";
 export type { BotAvatar, BotMetadata, BotSection, ProjectCreateInput } from "./contract";
 
@@ -258,22 +258,23 @@ export default async function plugin(bb: BbPluginApi) {
   registerBotMentions(bb, store);
 
   const THREAD_LIST_PROVIDER = "sidebar.threadListProvider" as const;
-  const CODE_PROVIDER_KEY = "sidebar:code-provider";
-  // Read the active provider and remember it as the Code tab's list whenever
+  // Key predates the Code → Threads rename; kept so the remembered list survives.
+  const THREADS_PROVIDER_KEY = "sidebar:code-provider";
+  // Read the active provider and remember it as the Threads tab's list whenever
   // it is not ours, so a choice made in Settings → Appearance sticks.
   const readThreadListProvider = async () => {
     const entry = (await bb.sdk.system.uiPreferences.list()).preferences[THREAD_LIST_PROVIDER];
-    const stored = (await bb.storage.kv.get<string>(CODE_PROVIDER_KEY)) ?? null;
-    const codeProvider = rememberedCodeProvider(stored, entry.value);
-    if (codeProvider !== stored && codeProvider !== null) await bb.storage.kv.set(CODE_PROVIDER_KEY, codeProvider);
-    return { ...entry, codeProvider };
+    const stored = (await bb.storage.kv.get<string>(THREADS_PROVIDER_KEY)) ?? null;
+    const threadsProvider = rememberedThreadsProvider(stored, entry.value);
+    if (threadsProvider !== stored && threadsProvider !== null) await bb.storage.kv.set(THREADS_PROVIDER_KEY, threadsProvider);
+    return { ...entry, threadsProvider };
   };
 
   bb.rpc.register(rpcContract, {
     sidebar_mode_get: async () => ({ provider: (await readThreadListProvider()).value }),
     sidebar_mode_set: async ({ mode }) => {
-      const { revision, codeProvider } = await readThreadListProvider();
-      const result = await bb.sdk.system.uiPreferences.set({ key: THREAD_LIST_PROVIDER, value: providerForMode(mode, codeProvider), expectedRevision: revision });
+      const { revision, threadsProvider } = await readThreadListProvider();
+      const result = await bb.sdk.system.uiPreferences.set({ key: THREAD_LIST_PROVIDER, value: providerForMode(mode, threadsProvider), expectedRevision: revision });
       return { provider: result.value };
     },
     project_browse: ({ hostId, path }) => browseProjectDirectory(bb, { hostId, path }),

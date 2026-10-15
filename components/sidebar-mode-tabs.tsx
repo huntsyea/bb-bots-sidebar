@@ -6,7 +6,7 @@ import { SIDEBAR_MODES, modeForProvider } from "../lib/sidebar-mode";
 import type { SidebarMode } from "../lib/sidebar-mode";
 import { usePortalScopeProps } from "../lib/portal-scope";
 
-const LABELS: Record<SidebarMode, string> = { code: "Code", bots: "Bots" };
+const LABELS: Record<SidebarMode, string> = { threads: "Threads", bots: "Bots" };
 // BB renders the active thread list provider inside this element. The tab bar
 // sits directly above it, so it stays put whichever provider is active.
 const SIDEBAR_BODY = '[data-testid="app-sidebar-body"]';
@@ -55,10 +55,10 @@ function useSidebarTabsHost(onListChange: () => void) {
 }
 
 // With BB's automatic provider choice, read the active tab off the list BB
-// actually rendered: ours carries .bots-sidebar, any other list is Code.
+// actually rendered: ours carries .bots-sidebar, any other list is Threads.
 function renderedMode(host: HTMLElement, provider: string | null): SidebarMode | null {
   if (provider === null) return null;
-  return host.nextElementSibling?.querySelector(".bots-sidebar") ? "bots" : "code";
+  return host.nextElementSibling?.querySelector(".bots-sidebar") ? "bots" : "threads";
 }
 
 export function SidebarModeTabBar({ mode, pending, onSelect }: { mode: SidebarMode | null; pending: boolean; onSelect: (mode: SidebarMode) => void }) {
@@ -66,7 +66,7 @@ export function SidebarModeTabBar({ mode, pending, onSelect }: { mode: SidebarMo
     <div role="tablist" aria-label="Sidebar view" aria-busy={pending || undefined} className="sidebar-tablist mx-2 mb-1.5 grid grid-cols-2 gap-0.5 rounded-lg bg-muted p-0.5" onKeyDown={(event) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       event.preventDefault();
-      const next = mode === "bots" ? "code" : "bots";
+      const next = mode === "bots" ? "threads" : "bots";
       onSelect(next);
       event.currentTarget.querySelector<HTMLElement>(`[data-mode="${next}"]`)?.focus();
     }}>
@@ -77,7 +77,7 @@ export function SidebarModeTabBar({ mode, pending, onSelect }: { mode: SidebarMo
           role="tab"
           data-mode={id}
           aria-selected={mode === id}
-          tabIndex={mode === id || (mode === null && id === "code") ? 0 : -1}
+          tabIndex={mode === id || (mode === null && id === "threads") ? 0 : -1}
           data-state={mode === id ? "active" : "inactive"}
           className="sidebar-tab h-6 rounded-md text-xs font-medium text-muted-foreground"
           onClick={() => onSelect(id)}
@@ -90,8 +90,8 @@ export function SidebarModeTabBar({ mode, pending, onSelect }: { mode: SidebarMo
 }
 
 /**
- * Code / Bots switcher, modelled on the Chat / Code toggle in the Claude app.
- * Bots pins this plugin's list; Code pins whichever other list the user chose
+ * Threads / Bots switcher, modelled on the Chat / Code toggle in the Claude app.
+ * Bots pins this plugin's list; Threads pins whichever other list the user chose
  * in Settings → Appearance → Sidebar (BB's own list until they choose one).
  * Both write BB's `sidebar.threadListProvider` preference, so the choice syncs
  * across windows.
@@ -109,7 +109,7 @@ export function SidebarModeTabs() {
     const id = ++latestRequest.current;
     return request.then(({ provider }) => { if (id === latestRequest.current) setProvider(provider); });
   }, []);
-  // Reading also lets the server remember a non-Bots list as the Code tab's.
+  // Reading also lets the server remember a non-Bots list as the Threads tab's.
   const refresh = useCallback(() => {
     apply(rpc.call("sidebar_mode_get", null)).catch(() => {});
   }, [apply, rpc]);
