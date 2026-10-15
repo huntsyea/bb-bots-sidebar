@@ -170,7 +170,7 @@ export function registerBotsCli(bb: BbPluginApi, store: BotStore, resolveOwner: 
         const rows = botRows.get(owner) ?? []; rows.push(thread); botRows.set(owner, rows);
       }
       const runtime = thread.runtime.displayStatus;
-      const status: Status = thread.hasPendingInteraction || runtime === "waiting-for-host" || runtime === "host-reconnecting" ? "waiting"
+      const status: Status = thread.hasPendingInteraction || runtime === "waiting-for-host" ? "waiting"
         : ["active", "pending", "provisioning", "starting", "stopping"].includes(runtime) || Object.values(thread.activity ?? {}).some(count => count > 0) ? "working"
         : runtime === "error" || thread.queuedWork === "failed" ? "error" : "idle";
       if (rank[status] > rank[result.get(owner) ?? "idle"]) result.set(owner, status);

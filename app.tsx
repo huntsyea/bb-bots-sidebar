@@ -4,9 +4,10 @@ import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { useConversationDrop } from "./hooks/use-conversation-drop";
 import { useConversationReorder } from "./hooks/use-conversation-reorder";
+import { useArchiveThread, useSidebarThreadActions } from "./hooks/use-sidebar-thread-actions";
+import type { SidebarThreadActions } from "./hooks/use-sidebar-thread-actions";
 import {
   definePluginApp,
-  experimental_useSidebarThreadActions,
   experimental_useSidebarThreadSplit,
   experimental_useSidebarThreads,
   useRealtime,
@@ -17,7 +18,6 @@ import {
 import type {
   NewThreadRequest,
   PluginSidebarThread,
-  PluginSidebarThreadActions,
   PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import type { BotAvatar, BotMetadata, BotSection, ProjectOwner, rpcContract } from "./contract";
@@ -309,18 +309,19 @@ function RowContextMenu({ children, items }: { children: ReactElement; items: Me
 function ConversationContextMenu({ children, thread, actions, onNavigate, items = [] }: {
   children: ReactElement;
   thread: PluginSidebarThread;
-  actions: PluginSidebarThreadActions;
+  actions: SidebarThreadActions;
   onNavigate: () => void;
   items?: MenuItem[];
 }) {
   const [renaming, setRenaming] = useState(false);
+  const archive = useArchiveThread(thread);
   return <>
     <RowContextMenu items={[
       ...items,
       { label: "Rename…", action: () => setRenaming(true) },
       { label: "Open in split", action: () => { actions.open(thread.id, { split: true }); onNavigate(); } },
-      { label: thread.isUnread ? "Mark as read" : "Mark as unread", action: () => { void actions.setRead(thread.id, thread.isUnread); } },
-      { label: "Archive conversation", action: () => actions.archive(thread.id) },
+      { label: thread.isUnread ? "Mark as read" : "Mark as unread", action: () => { actions.setRead(thread.id, thread.isUnread).catch(() => toast.error("Could not update the conversation's read state.")); } },
+      { label: "Archive conversation", disabled: !archive, action: () => archive?.() },
     ]}>{children}</RowContextMenu>
     {renaming ? <RenameConversationDialog title={thread.title ?? thread.titleFallback ?? "Untitled conversation"} onSave={(title) => actions.rename(thread.id, title)} onClose={() => setRenaming(false)} /> : null}
   </>;
@@ -350,7 +351,7 @@ function BranchToggle({ title, count, expanded, childrenId, onToggle }: { title:
 type ReorderConversation = (threadId: string, targetThreadId: string, position: "before" | "after") => void;
 
 function ThreadRow({ thread, siblings, childrenByParent, activePath, actions, activeThreadId, onNavigate, onReorder, onNewInWorktree, onFork, onNest, onArchive, reorderDrag }: {
-  thread: PluginSidebarThread; siblings: PluginSidebarThread[]; childrenByParent: Map<string, PluginSidebarThread[]>; activePath: Set<string>; actions: PluginSidebarThreadActions; activeThreadId: string | null; onNavigate: () => void; onReorder: ReorderConversation; onNewInWorktree: (thread: PluginSidebarThread) => void; onFork: (thread: PluginSidebarThread) => void; onNest: (threadId: string, parentThreadId: string) => void; onArchive: (threadId: string) => void; reorderDrag: ReturnType<typeof useConversationReorder>;
+  thread: PluginSidebarThread; siblings: PluginSidebarThread[]; childrenByParent: Map<string, PluginSidebarThread[]>; activePath: Set<string>; actions: SidebarThreadActions; activeThreadId: string | null; onNavigate: () => void; onReorder: ReorderConversation; onNewInWorktree: (thread: PluginSidebarThread) => void; onFork: (thread: PluginSidebarThread) => void; onNest: (threadId: string, parentThreadId: string) => void; onArchive: (threadId: string) => void; reorderDrag: ReturnType<typeof useConversationReorder>;
 }) {
   const split = experimental_useSidebarThreadSplit(thread.id);
   const children = childrenByParent.get(thread.id) ?? [];
@@ -388,7 +389,7 @@ function ThreadRow({ thread, siblings, childrenByParent, activePath, actions, ac
       <a {...split.splitProps} onPointerDown={(event) => { split.splitProps.onPointerDown?.(event); reorderDrag.begin(thread, event); }} ref={branch.rowRef} role="link" tabIndex={0} aria-current={activeThreadId === thread.id ? "page" : undefined} onKeyDown={(event) => { if (event.key === "Enter") { actions.open(thread.id, { split: event.metaKey || event.ctrlKey }); onNavigate(); } }} data-sidebar-thread-shortcut-target="" data-sidebar-thread-id={thread.id} className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 py-1 pr-1" onClick={(event) => { event.preventDefault(); actions.open(thread.id, { split: event.metaKey || event.ctrlKey }); onNavigate(); }}>
         <ConversationStatusIcon thread={thread} /><span className="min-w-0 flex-1 truncate">{title}</span>
       </a>
-      <ConversationArchiveButton thread={thread} actions={actions} onArchive={onArchive} />
+      <ConversationArchiveButton thread={thread} onArchive={onArchive} />
       <BranchToggle title={title} count={children.length} expanded={branch.expanded} childrenId={branch.childrenId} onToggle={branch.toggle} />
     </div>
   </ConversationContextMenu>{children.length ? <ul id={branch.childrenId} className="conversation-children" hidden={!branch.expanded}>{branch.expanded ? children.map((child) => <ThreadRow key={child.id} thread={child} siblings={children} childrenByParent={childrenByParent} activePath={activePath} actions={actions} activeThreadId={activeThreadId} onNavigate={onNavigate} onReorder={onReorder} onNewInWorktree={onNewInWorktree} onFork={onFork} onNest={onNest} onArchive={onArchive} reorderDrag={reorderDrag} />) : null}</ul> : null}</li>;
@@ -426,7 +427,7 @@ function BotGroup({
   threads: PluginSidebarThread[];
   selected: boolean;
   activeThreadId: string | null;
-  actions: PluginSidebarThreadActions;
+  actions: SidebarThreadActions;
   topicsVisible: boolean;
   onToggleTopics: () => void;
   onEdit: (tab?: EditorTab) => void;
@@ -513,7 +514,7 @@ function RecentRow({
   thread: PluginSidebarThread;
   childrenByParent: Map<string, PluginSidebarThread[]>;
   activePath: Set<string>;
-  actions: PluginSidebarThreadActions;
+  actions: SidebarThreadActions;
   activeThreadId: string | null;
   onNavigate: () => void;
   onAssign: (thread: PluginSidebarThread) => void;
@@ -557,7 +558,7 @@ function RecentRow({
           <span className="block truncate text-[8px] leading-[10px] text-muted-foreground">{detail}</span>
         </span>
       </a>
-      <ConversationArchiveButton thread={thread} actions={actions} onArchive={onArchive} />
+      <ConversationArchiveButton thread={thread} onArchive={onArchive} />
       <BranchToggle title={title} count={children.length} expanded={branch.expanded} childrenId={branch.childrenId} onToggle={branch.toggle} />
       </div>
       </ConversationContextMenu>
@@ -575,7 +576,7 @@ function storedShowChats() {
 
 function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
   const sidebar = experimental_useSidebarThreads();
-  const actions = experimental_useSidebarThreadActions();
+  const actions = useSidebarThreadActions();
   const navigate = useBbNavigate();
   const portalScope = usePortalScopeProps();
   const [conversation, setConversation] = useState<ConversationTarget | null>(null);

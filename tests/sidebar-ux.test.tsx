@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { bot, personalProjectId, thread } from "./fixtures";
+import { bot, personalProjectId, thread, sidebarProject, sidebarActionCalls, threadActionHost } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 afterEach(cleanup);
@@ -14,12 +14,13 @@ async function mount() {
     { ...bot, id: "three", name: "Bot three", sectionId: "second", mainThreadId: "main-three", order: 2 },
   ];
   const sections = [{ id: "first", name: "First", order: 0 }, { id: "second", name: "Second", order: 1 }];
+  const host = threadActionHost();
   const slot = renderSlot(app.threadLists[0]!, {
     activeThreadId: "main-one", activeProjectId: "one", isCompactViewport: false,
-    onNavigate: vi.fn(), searchQuery: "", Original: () => null,
-  }, {
+    onNavigate: vi.fn(), searchQuery: "",
+  }, { ...host.options,
     sidebarThreads: {
-      projects: [{ id: "project", name: "Shared project", isPersonal: false }],
+      projects: [sidebarProject("project", "Shared project")],
       threads: bots.map((bot) => thread(bot.mainThreadId, 100)),
     },
     rpc: {
@@ -31,6 +32,7 @@ async function mount() {
       section_create: () => { const section = { id: "new", name: "New section", order: 2 }; sections.push(section); return section; },
     },
   });
+  host.track(slot);
   await slot.findByText("Bot one");
   return slot;
 }
@@ -169,7 +171,7 @@ it("removes Move main and keeps ordinary new conversations cancellable", async (
   expect(slot.queryByRole("menuitem", { name: "Move main…" })).toBeNull();
   fireEvent.click(await slot.findByRole("menuitem", { name: "New conversation…" }));
   const dialog = await slot.findByRole("dialog", { name: "New conversation" });
-  expect(slot.inspection.sidebarActionCalls).toEqual([]);
+  expect(sidebarActionCalls(slot)).toEqual([]);
   expect(slot.getByTestId("bb-new-thread-composer").getAttribute("data-default-project-id")).toBe(personalProjectId);
   fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
   await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());

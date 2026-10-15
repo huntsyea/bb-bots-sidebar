@@ -13,7 +13,7 @@ import {
   shapePath,
   type BotAvatar,
 } from "../lib/appearance";
-import { bot, personalProjectId, thread } from "./fixtures";
+import { bot, personalProjectId, thread, sidebarProject, threadActionHost } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 afterEach(cleanup);
@@ -25,12 +25,13 @@ function mountPanel(avatar = base, onChange = vi.fn()) {
 }
 
 async function mountSidebar() {
+  const host = threadActionHost();
   const slot = renderSlot(app.threadLists[0]!, {
     activeThreadId: "main", activeProjectId: "project", isCompactViewport: false,
-    onNavigate: vi.fn(), searchQuery: "", Original: () => null,
-  }, {
+    onNavigate: vi.fn(), searchQuery: "",
+  }, { ...host.options,
     sidebarThreads: {
-      projects: [{ id: "project", name: "Test bot", isPersonal: false }],
+      projects: [sidebarProject("project", "Test bot")],
       threads: [thread("main", 1000)],
     },
     rpc: {
@@ -47,6 +48,7 @@ async function mountSidebar() {
       bot_prepare: () => bot,
     },
   });
+  host.track(slot);
   await slot.findByText("Test bot");
   return slot;
 }
