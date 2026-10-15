@@ -39,6 +39,7 @@ import { ConversationArchiveButton } from "@/components/conversation-archive-but
 import { BotNewConversationButton } from "@/components/bot-new-conversation-button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ResizableChats } from "@/components/resizable-chats";
+import { SidebarModeTabs } from "@/components/sidebar-mode-tabs";
 import { ConversationDialog } from "@/components/conversation-dialog";
 import type { ConversationTarget } from "@/components/conversation-dialog";
 import { AssignConversationDialog } from "@/components/assign-conversation-dialog";
@@ -565,6 +566,13 @@ function RecentRow({
   );
 }
 
+// Client preference: the Bots tab shows only bots unless the user opts back
+// into the unassigned Chats pane (needed to drag existing threads onto bots).
+const SHOW_CHATS_KEY = "bots:show-chats";
+function storedShowChats() {
+  try { return localStorage.getItem(SHOW_CHATS_KEY) === "true"; } catch { return false; }
+}
+
 function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
   const sidebar = experimental_useSidebarThreads();
   const actions = experimental_useSidebarThreadActions();
@@ -575,6 +583,11 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [assigning, setAssigning] = useState<PluginSidebarThread | null>(null);
   const [showOtherChats, setShowOtherChats] = useState(false);
+  const [showChats, setShowChats] = useState(storedShowChats);
+  const toggleChats = (next: boolean) => {
+    setShowChats(next);
+    try { localStorage.setItem(SHOW_CHATS_KEY, String(next)); } catch { /* preference is best-effort */ }
+  };
   const chatsOtherId = useId();
   const [editor, setEditor] = useState<EditorTarget | null>(null);
   const [showHidden, setShowHidden] = useState(false);
@@ -807,6 +820,8 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
             <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => { setAddingSection(false); setEditor({ kind: "create" }); }}>Bot</DropdownMenu.Item>
             <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => setAddingSection(true)}>Section</DropdownMenu.Item>
             <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => { setAddingSection(false); setCreatingProject(true); }}>Project</DropdownMenu.Item>
+            <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-border" />
+            <DropdownMenu.CheckboxItem className={MENU_ITEM_CLASS} checked={showChats} onCheckedChange={toggleChats}>Show unassigned chats</DropdownMenu.CheckboxItem>
           </DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>
         </div>
         {addingSection ? <form className="mb-2 flex gap-1 px-1.5" onSubmit={(event) => event.preventDefault()}><Input autoFocus className="h-7 min-w-0 text-xs" aria-label="Section name" value={sectionName} maxLength={80} onChange={(event) => setSectionName(event.target.value)} placeholder="Section name" /><Button type="button" size="sm" className="h-7 px-2" disabled={!sectionName.trim() || sectionPending} onClick={() => run(addSection)}>Add</Button><button type="button" className="px-1 text-xs text-muted-foreground" aria-label="Cancel section creation" disabled={sectionPending} onClick={() => setAddingSection(false)}>Cancel</button></form> : null}
@@ -856,7 +871,7 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
           <button type="button" className="h-5 rounded px-1.5 text-[9px] text-muted-foreground hover:bg-state-hover" aria-pressed={showHidden} onClick={() => setShowHidden((current) => !current)}>{hiddenBots.length} hidden</button>
         </div> : null}
       </div>
-      <ResizableChats activeChatId={activeThreadId && !owners.has(activeThreadId) ? activeThreadId : null} onNewChat={() => {
+      {showChats ? <ResizableChats activeChatId={activeThreadId && !owners.has(activeThreadId) ? activeThreadId : null} onNewChat={() => {
         actions.openNewThread({ ...(personalProjectId ? { projectId: personalProjectId } : {}), focusPrompt: true });
         onNavigate();
       }}>
@@ -864,7 +879,7 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
           {chatsTree.recent.filter((thread) => !locallyArchived.has(thread.id)).map(renderChat)}
           {chatsTree.other.length ? <li><button type="button" className="flex min-h-7 w-full items-center gap-1 rounded-md px-1 text-left text-[10px] text-muted-foreground hover:bg-state-hover" aria-expanded={showOtherChats} aria-controls={chatsOtherId} onClick={() => setShowOtherChats((current) => !current)}><span className={showOtherChats ? "rotate-90" : ""}><TinyIcon name="chevron" /></span>{chatsTree.other.length} Other</button><ul id={chatsOtherId} hidden={!showOtherChats}>{showOtherChats ? chatsTree.other.filter((thread) => !locallyArchived.has(thread.id)).map(renderChat) : null}</ul></li> : null}
         </ul>
-      </ResizableChats>
+      </ResizableChats> : null}
       {editingSection ? <RenameConversationDialog title={editingSection.name} heading="Rename section" description="Choose the section name shown in the sidebar." onClose={() => setEditingSection(null)} onSave={async (name) => {
         await rpc.call("section_update", { sectionId: editingSection.id, name }); refresh();
       }} /> : null}
@@ -922,7 +937,8 @@ export default definePluginApp((app) => {
   app.slots.experimental_threadList({
     id: "bot-projects",
     title: "Bots Sidebar",
-    description: "Independent bots with their conversation trees and unassigned chats.",
+    description: "Independent bots with their conversation trees.",
     component: BotsSidebar,
   });
+  app.slots.experimental_appOverlay({ id: "sidebar-mode-tabs", component: SidebarModeTabs });
 });

@@ -13,6 +13,7 @@ import { listBotConversations } from "./lib/bot-conversations";
 import { botProjectContext } from "./lib/project-context";
 import { BOT_GUIDANCE, botInstructions } from "./lib/bot-instructions";
 import { MEMORY_MAX_CHARS, validateMemory } from "./lib/memory-limit";
+import { SIDEBAR_MODE_PROVIDERS } from "./lib/sidebar-mode";
 export { rpcContract, avatarSchema } from "./contract";
 export type { BotAvatar, BotMetadata, BotSection, ProjectCreateInput } from "./contract";
 
@@ -256,7 +257,16 @@ export default async function plugin(bb: BbPluginApi) {
   registerBotsCli(bb, store, resolveOwner);
   registerBotMentions(bb, store);
 
+  const THREAD_LIST_PROVIDER = "sidebar.threadListProvider" as const;
+  const readThreadListProvider = async () => (await bb.sdk.system.uiPreferences.list()).preferences[THREAD_LIST_PROVIDER];
+
   bb.rpc.register(rpcContract, {
+    sidebar_mode_get: async () => ({ provider: (await readThreadListProvider()).value }),
+    sidebar_mode_set: async ({ mode }) => {
+      const { revision } = await readThreadListProvider();
+      const result = await bb.sdk.system.uiPreferences.set({ key: THREAD_LIST_PROVIDER, value: SIDEBAR_MODE_PROVIDERS[mode], expectedRevision: revision });
+      return { provider: result.value };
+    },
     project_browse: ({ hostId, path }) => browseProjectDirectory(bb, { hostId, path }),
     project_create: (input) => serial("project-create", () => serial(`project-create:${input.requestId}`, () => createWorkProject(bb, store, input))),
     bots_list: async () => {

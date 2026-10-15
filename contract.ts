@@ -4,6 +4,7 @@ import { AVATAR_EXPRESSION_IDS, AVATAR_MOTION_IDS, AVATAR_SHAPE_IDS } from "./li
 import { newThreadRequestSchema } from "./lib/new-thread-request";
 
 import { MEMORY_MAX_CHARS, MEMORY_LIMIT_ERROR } from "./lib/memory-limit";
+import { SIDEBAR_MODES } from "./lib/sidebar-mode";
 
 const id = z.string().min(1);
 export const avatarSchema = z.object({
@@ -84,7 +85,11 @@ export const stateMutationToolSchema = z.object({
 });
 export const stateMutationResultSchema = z.object({ botId: id, target: stateTargetSchema, changed: z.boolean(), revision: z.number(), state: z.json() }).strict();
 
+const sidebarProviderSchema = z.object({ provider: z.string() }).strict();
+
 export const rpcContract = defineRpcContract({
+  sidebar_mode_get: { input: z.null(), output: sidebarProviderSchema },
+  sidebar_mode_set: { input: z.object({ mode: z.enum(SIDEBAR_MODES) }).strict(), output: sidebarProviderSchema },
   bots_list: { input: z.null(), output: z.object({ bots: z.array(metadataSchema), hosts: z.array(hostSchema), sections: z.array(sectionSchema), projects: z.array(projectSchema), threadBindings: z.array(z.object({ threadId: id, botId: id }).strict()), warnings: z.array(z.string()), personalProjectId: id, projectOwners: z.array(projectOwnerSchema).optional() }).strict() },
   project_browse: { input: projectBrowseInputSchema, output: projectBrowseOutputSchema },
   project_create: { input: projectCreateInputSchema, output: projectSchema },
