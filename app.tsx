@@ -40,6 +40,8 @@ import { BotNewConversationButton } from "@/components/bot-new-conversation-butt
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ResizableChats } from "@/components/resizable-chats";
 import { SidebarModeTabs } from "@/components/sidebar-mode-tabs";
+import { BotChangeApprovalForm } from "@/components/bot-change-approval";
+import { BOT_CHANGE_APPROVAL_RENDERER } from "./lib/bot-change-approval";
 import { ConversationDialog } from "@/components/conversation-dialog";
 import type { ConversationTarget } from "@/components/conversation-dialog";
 import { AssignConversationDialog } from "@/components/assign-conversation-dialog";
@@ -947,4 +949,5 @@ export default definePluginApp((app) => {
     component: BotsSidebar,
   });
   app.slots.experimental_appOverlay({ id: "sidebar-mode-tabs", component: SidebarModeTabs });
+  app.slots.pendingInteraction({ id: BOT_CHANGE_APPROVAL_RENDERER, component: BotChangeApprovalForm });
 });
