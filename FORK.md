@@ -42,6 +42,12 @@ This new upstream test also fails on upstream `d54ae23` alone: `ENOENT` reading
 the private `state/<bot-id>/bot.json` export. No baseline failure was removed.
 The remaining 18 added tests pass. Live UI validation remains for approved reload.
 
+BBP-14 resolved these failures: the SDK test host used the macOS temp path under
+`/var`, a symlink to `/private/var`. Private exports correctly reject symlink
+ancestors. The Vitest configuration now uses the real temp root for test workers;
+production confinement checks are unchanged. The main baseline passes 453/453
+tests; the merged branch passes 472/472, including launch-preset persistence.
+
 Package engines require BB `>=0.46.1` and SDK `>=0.6.49`; the SDK dependency is
 pinned to `0.6.49`. Build metadata confirms BB `0.46.1`, SDK `0.6.49`, and plugin
 ID `bots-sidebar`.
@@ -51,13 +57,88 @@ After Hunter approves, Warden must verify that no bot approval is pending,
 fast-forward main to this branch, build in main, then reload bots-sidebar last
 under `../docs/agents/warden-reload-protocol.md`. Do not install from the worktree.
 
+## Reload and rollback safety (BBP-15)
+
+BBP-5 remains on hold until Hunter approves the reload through Warden. The script
+does not stop BB, deploy code, build, or reload the plugin. Run it with Bash and
+SQLite 3 installed. It requires explicit paths and has no live-data default.
+
+Read-only inspection on 2026-10-18 found the live directory at
+`/Users/huntsyea/.bb/plugins/bots-sidebar`, containing `data.db` and `state/`.
+Recheck the installed source and data location before deployment. Backups contain
+private bot state. Keep them outside Git checkouts and do not attach them to tasks.
+
+### Before an approved reload
+
+1. Follow Warden's reload order: model-profiles, cursor-sidebar, then bots-sidebar.
+   Check that no bot approval is pending. Record main's commit and confirm that
+   main can fast-forward to `sync/BBP-5`. The prepared rollback commit is
+   `df530b00eee5a9917307328d8895d15363520698`.
+2. Pause bot writes. For an exact DB/state pair, stop BB and its plugin host while
+   taking the backup. SQLite `.backup` is consistent during live reads, but the
+   separate `state/` copy is not an atomic snapshot with SQLite. SQLite remains
+   authoritative. Create an external backup root, then run from the sync worktree:
+
+   ```sh
+   mkdir -p "$HOME/.bb/backups/bots-sidebar"
+   bash "scripts/reload-safety.sh" backup \
+     "$HOME/.bb/plugins/bots-sidebar" "$HOME/.bb/backups/bots-sidebar"
+   ```
+
+   Record the printed timestamped directory. A zero exit status confirms the
+   SQLite backup, state copy, and database integrity check. The backup database
+   uses DELETE journal mode so it needs no WAL sidecars. The source is opened
+   read-only. Failed backup directories remain for inspection; do not use them.
+3. After approval, fast-forward main, run typecheck/tests, build there, and reload
+   under Warden's protocol. Keep the installed source on main. Check running status,
+   plugin logs, bot list, private state, and conversation creation. Do not save
+   launch presets until the update is stable. Report results to Warden.
+
+### Roll back after a failed reload
+
+Stop BB and its plugin host before changing data. Keep writers stopped until the
+old code and compatible data are both in place. First take another backup of the
+failed version's data. Keep the safety script accessible from the sync worktree.
+Choose one data recovery method before reverting the code:
+
+- **Keep current bot edits:** run the command below against the stopped plugin's
+  database. It removes only top-level `launchPreset` keys, including JSON null,
+  in one transaction. It prints the changed-row count; a repeat prints zero.
+  Other fields and tables remain intact. This deliberately discards saved launch
+  defaults. It does not remove unrelated incompatible fields from future updates.
+
+  ```sh
+  bash "scripts/reload-safety.sh" strip-launch-presets \
+    "$HOME/.bb/plugins/bots-sidebar/data.db"
+  ```
+
+- **Restore pre-update state:** with BB stopped, preserve the entire current data
+  directory in a separate recovery folder. Use SQLite `.restore` to restore the
+  chosen backup's `data.db` into the target database, then replace `state/` with
+  the matching backup copy. Do not copy a database over active WAL sidecars or
+  combine a database and state directory from different backups. This discards
+  bot changes made since the backup. Verify `PRAGMA integrity_check` returns `ok`.
+
+Then restore the recorded code revision in main, rebuild, start BB, and reload
+bots-sidebar. Verify the bot list, state, logs, and running status. Report the
+rollback result to Warden. A code-only rollback is unsafe: main's strict decoder
+rejects `launchPreset`. Private files are exports; after the strip, the restored
+code regenerates them from SQLite when state is prepared.
+
+Validation used copies only: a read-only live backup contained five bots. Adding
+a preset in a separate copy made main's unchanged `createBotStore().list()` throw;
+stripping it restored exact equality with all five original decoded records.
+The committed script test covers WAL backup, state copying, spaces/apostrophes in
+paths, null/absent presets, repeat runs, unrelated fields/tables, and an unchanged
+source database. No live strip, deployment, or reload was performed.
+
 ## Taking an upstream update
 
 ```sh
 ../sync-forks.sh                 # what upstream has that we don't
 git merge vX.Y.Z                 # upstream releases are tags
 # resolve conflicts, keeping both upstream's change and ours above
-npx tsc --noEmit && npm test     # 37 private-state/server tests failed upstream before the merge too
+npx tsc --noEmit && npm test
 git push                         # to origin (our fork)
-npm run build && bb plugin reload bots-sidebar
+# Follow the approved reload and rollback procedure above before deployment.
 ```
