@@ -50,9 +50,10 @@ const environment = z.discriminatedUnion("type", [
 const source = z.enum(["explicit", "client-preference"]).optional();
 export const newThreadRequestSchema: z.ZodType<NewThreadRequest> = z.object({
   projectId: id, providerId: id, model: z.string(),
-  reasoningLevel: z.enum(["none", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]),
+  reasoningLevel: z.string().min(1),
   permissionMode: z.enum(["accept-edits", "auto", "full"]),
-  serviceTier: z.enum(["default", "fast"]).optional(),
+  serviceTier: z.string().min(1).optional(),
+  sessionOptions: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
   executionInputSources: z.object({ providerId: source, model: source, reasoningLevel: source, permissionMode: source, serviceTier: source }).strict(),
   environment, input: z.array(input).min(1), sendAt: z.number().int().nonnegative().optional(),
 }).strict();

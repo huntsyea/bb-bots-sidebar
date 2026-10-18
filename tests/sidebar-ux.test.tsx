@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { bot, personalProjectId, thread, sidebarProject, sidebarActionCalls, threadActionHost } from "./fixtures";
+import { loadPluginApp } from "@get-bb/plugin-sdk/testing/app";
+import { renderSlot } from "./sidebar-host";
+import { bot, personalProjectId, thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 afterEach(cleanup);
@@ -14,13 +15,12 @@ async function mount() {
     { ...bot, id: "three", name: "Bot three", sectionId: "second", mainThreadId: "main-three", order: 2 },
   ];
   const sections = [{ id: "first", name: "First", order: 0 }, { id: "second", name: "Second", order: 1 }];
-  const host = threadActionHost();
   const slot = renderSlot(app.threadLists[0]!, {
     activeThreadId: "main-one", activeProjectId: "one", isCompactViewport: false,
     onNavigate: vi.fn(), searchQuery: "",
-  }, { ...host.options,
+  }, {
     sidebarThreads: {
-      projects: [sidebarProject("project", "Shared project")],
+      projects: [{ id: "project", name: "Shared project", isPersonal: false, href: "/projects/project", settingsHref: "/projects/project/settings" }],
       threads: bots.map((bot) => thread(bot.mainThreadId, 100)),
     },
     rpc: {
@@ -32,7 +32,6 @@ async function mount() {
       section_create: () => { const section = { id: "new", name: "New section", order: 2 }; sections.push(section); return section; },
     },
   });
-  host.track(slot);
   await slot.findByText("Bot one");
   return slot;
 }
@@ -61,7 +60,7 @@ it("keeps Enter from saving the bot editor and lets SOUL use newlines", async ()
   const name = within(dialog).getByRole("textbox", { name: "Bot name" });
   fireEvent.change(name, { target: { value: "Updated bot" } });
   expect(fireEvent.keyDown(name, { key: "Enter" })).toBe(false);
-  fireEvent.click(within(dialog).getByRole("tab", { name: "Instructions" }));
+  fireEvent.click(within(dialog).getByRole("tab", { name: "Context" }));
   const soul = within(dialog).getByRole("textbox", { name: "SOUL.md" });
   expect(fireEvent.keyDown(soul, { key: "Enter" })).toBe(true);
   fireEvent.change(soul, { target: { value: "First line\nSecond line" } });
@@ -76,20 +75,21 @@ it("keeps the editor compact with one panel, retained drafts, and an outside-pan
   fireEvent.contextMenu(slot.getByText("Bot one"));
   fireEvent.click(await slot.findByRole("menuitem", { name: "Edit bot…" }));
   const dialog = await slot.findByRole("dialog", { name: "Edit bot" });
-  expect(within(dialog).getAllByRole("tab")).toHaveLength(5);
+  expect(within(dialog).getAllByRole("tab")).toHaveLength(3);
   expect(within(dialog).getAllByRole("tabpanel")).toHaveLength(1);
-  expect(dialog.querySelector("textarea")).toBeNull();
+  expect(within(dialog).getByRole("textbox", { name: "Starter prompt" })).toBeTruthy();
   expect(within(dialog).getByRole("img", { name: "Bot preview" }).getAttribute("width")).toBe("48");
   expect(within(dialog).getByRole("button", { name: "Save bot" }).closest('[role="tabpanel"]')).toBeNull();
-  const setup = within(dialog).getByRole("tab", { name: "Setup" });
+  const setup = within(dialog).getByRole("tab", { name: "Bot" });
   setup.focus(); fireEvent.keyDown(setup, { key: "ArrowRight" });
-  expect(within(dialog).getByRole("tab", { name: "Instructions" }).getAttribute("aria-selected")).toBe("true");
+  expect(within(dialog).getByRole("tab", { name: "Context" }).getAttribute("aria-selected")).toBe("true");
   fireEvent.change(within(dialog).getByRole("textbox", { name: "SOUL.md" }), { target: { value: "Soul draft" } });
   expect(dialog.querySelectorAll("textarea")).toHaveLength(1);
   fireEvent.click(within(dialog).getByRole("button", { name: "Customize avatar" }));
-  expect(within(dialog).getByRole("tab", { name: "Appearance" }).getAttribute("aria-selected")).toBe("true");
-  fireEvent.click(within(dialog).getByRole("button", { name: "Happy" }));
-  fireEvent.click(within(dialog).getByRole("tab", { name: "Instructions" }));
+  expect(within(dialog).queryByRole("tab", { name: "Appearance" })).toBeNull();
+  fireEvent.click(await slot.findByRole("button", { name: "Happy" }));
+  fireEvent.keyDown(slot.getByRole("dialog", { name: "Bot appearance" }), { key: "Escape" });
+  fireEvent.click(within(dialog).getByRole("tab", { name: "Context" }));
   expect((within(dialog).getByRole("textbox", { name: "SOUL.md" }) as HTMLTextAreaElement).value).toBe("Soul draft");
   fireEvent.click(within(dialog).getByRole("button", { name: "Save bot" }));
   await waitFor(() => expect(slot.inspection.rpcCalls).toContainEqual({ method: "bot_update", input: expect.objectContaining({ soul: "Soul draft", avatar: expect.objectContaining({ expression: "happy" }) }) }));
@@ -171,7 +171,7 @@ it("removes Move main and keeps ordinary new conversations cancellable", async (
   expect(slot.queryByRole("menuitem", { name: "Move main…" })).toBeNull();
   fireEvent.click(await slot.findByRole("menuitem", { name: "New conversation…" }));
   const dialog = await slot.findByRole("dialog", { name: "New conversation" });
-  expect(sidebarActionCalls(slot)).toEqual([]);
+  expect(slot.inspection.navigateCalls).toEqual([]);
   expect(slot.getByTestId("bb-new-thread-composer").getAttribute("data-default-project-id")).toBe(personalProjectId);
   fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
   await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());

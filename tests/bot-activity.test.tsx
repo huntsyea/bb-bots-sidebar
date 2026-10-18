@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, within } from "@testing-library/react";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { loadPluginApp } from "@get-bb/plugin-sdk/testing/app";
+import { renderSlot } from "./sidebar-host";
 import { BotActivityBadge } from "../components/bot-activity-badge";
-import { bot, personalProjectId, thread, sidebarProject, sidebarActionCalls, threadActionHost } from "./fixtures";
+import { bot, personalProjectId, thread } from "./fixtures";
 
 afterEach(cleanup);
 const running = (id: string) => thread(id, 100, { indicator: "runtime" });
@@ -87,12 +88,10 @@ const app = await loadPluginApp(() => import("../app"));
 it("shows collapsed activity at the avatar without mixing bot ownership or changing child disclosure", async () => {
   const onNavigate = vi.fn();
   const rows = [running("main"), { ...running("child"), parentThreadId: "main" }, running("topic"), running("second-topic"), running("another-bot"), running("unassigned")];
-  const host = threadActionHost();
-  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: null, activeProjectId: "project", isCompactViewport: false, onNavigate, searchQuery: "" }, { ...host.options,
-    sidebarThreads: { projects: [sidebarProject("project", "Shared project")], threads: rows },
+  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: null, activeProjectId: "project", isCompactViewport: false, onNavigate, searchQuery: "" }, {
+    sidebarThreads: { projects: [{ id: "project", name: "Shared project", isPersonal: false, href: "/projects/project", settingsHref: "/projects/project/settings" }], threads: rows },
     rpc: { bots_list: () => ({ bots: [bot, { ...bot, id: "other-bot", name: "Other bot", mainThreadId: "another-bot" }], hosts: [], sections: [], projects: [], personalProjectId, warnings: [], threadBindings: rows.filter(row => row.id !== "unassigned").map(row => ({ threadId: row.id, botId: row.id === "another-bot" ? "other-bot" : bot.id })) }) },
   });
-  host.track(slot);
   await slot.findByText(bot.name);
   const row = slot.getByText(bot.name).closest<HTMLElement>(".project-row")!;
   expect(within(row).getByRole("img", { name: "First conversation: Working; 3 other conversations working" }).closest(".bot-icon-shell")).not.toBeNull();
@@ -103,6 +102,6 @@ it("shows collapsed activity at the avatar without mixing bot ownership or chang
   expect(slot.queryByText("Conversation child")).toBeNull();
   fireEvent.click(slot.getByRole("button", { name: "Expand children of Conversation main" }));
   expect(slot.getByText("Conversation child")).toBeTruthy();
-  expect(sidebarActionCalls(slot)).toEqual([]);
+  expect(slot.inspection.navigateCalls).toEqual([]);
   expect(onNavigate).not.toHaveBeenCalled();
 });

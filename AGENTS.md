@@ -123,8 +123,8 @@ or reintroduce hover toolbars when making unrelated changes.
   controls back to the row. The null/default section is Main and has no sidebar
   heading. Preserve explicit custom sections. The Section dropdown includes
   Create New… (not a separate always-visible creation button).
-- Keep Create/Edit compact: small avatar beside name/role, Setup / Instructions /
-  State / Projects / Appearance tabs, one logical file editor at a time, and a fixed visible
+- Keep Create/Edit compact: small avatar beside name/role, Bot / Context /
+  Projects tabs, one logical file editor at a time, and a fixed visible
   Save/Cancel footer. Do not bring back the tall stretching avatar panel or stack
   all settings in one long form. Preserve drafts across tabs. Storage is private
   and automatic: no home path picker or custom-working-directory control.
@@ -138,8 +138,10 @@ or reintroduce hover toolbars when making unrelated changes.
 - Bot context contains fixed guidance + SOUL.md + MEMORY.md (full compliant memory).
   Per-bot AGENTS.md is retired; preserve historical text as inactive private data,
   never inject it or offer it as an editable state file. Workspace AGENTS.md still applies.
-- Edit bot is the single editor: Instructions has SOUL.md, State has
-  MEMORY.md / settings.json. Do not restore a separate View bot state action.
+- Edit bot is the single editor: Context has one document picker for SOUL.md,
+  MEMORY.md, and settings.json. Avatar click opens a compact appearance popover;
+  one small dice button beside the avatar randomizes the draft. Do not restore
+  separate Appearance/State tabs or a View bot state action.
   Save all changed fields atomically with the original revision and per-file hashes;
   invalid JSON/conflicts keep every draft and never partially save identity/state.
 - New bot drafts randomize color, shape, expression, and idle motion ONCE. Existing
@@ -169,6 +171,16 @@ or reintroduce hover toolbars when making unrelated changes.
   may be reconciled by the host composer, never silently claim same-host success.
 - Editors require an explicit Save click. Enter in text inputs must not submit;
   SOUL.md must accept normal newlines. The bot editor can create a section.
+- The Bot tab includes New conversations. Persist optional launchPreset metadata with
+  the same identity revision and atomic Save; omitted fields from older clients
+  preserve it, null clears it. Native provider/model and permission pickers use
+  the bot's selected host. Model/permission overrides are opt-in; existing bots
+  inherit project defaults. A worktree preference changes only generic + starts
+  in owned projects, never personal chats or explicit checkout/fork actions.
+  Starter prompts seed empty drafts only. Capture all seeds on opening, never
+  reapply them over submitted selections, and forward executionInputSources and
+  provider-defined reasoning/service-tier values unchanged. New-chat presets
+  do not apply to forks. Keep tests/public-sdk.test.ts passing.
 - Do not restore Move main or Make main. Keep existing histories and legacy pointers.
 - Keep the later additions: worktree composer, conversation/Chats menus and
   rename/archive, older unassigned Chats grouped under N Other, and status icons.

@@ -2,9 +2,10 @@
 import { selectOption } from "./select-helper";
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { loadPluginApp } from "@get-bb/plugin-sdk/testing/app";
+import { renderSlot } from "./sidebar-host";
 import { rpcContract, type BotMetadata } from "../contract";
-import { bot, personalProjectId, threadActionHost } from "./fixtures";
+import { bot, personalProjectId } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 afterEach(cleanup);
@@ -13,8 +14,7 @@ async function mount({ projectFailures = 0, botFailures = 0, offline = false } =
   const projects = [{ id: "existing", name: "Existing work" }];
   const sections: { id: string; name: string; order: number }[] = [];
   const onNavigate = vi.fn();
-  const host = threadActionHost();
-  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: null, activeProjectId: null, isCompactViewport: false, onNavigate, searchQuery: "" }, { ...host.options,
+  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: null, activeProjectId: null, isCompactViewport: false, onNavigate, searchQuery: "" }, {
     sidebarThreads: { projects: [], threads: [] }, rpc: {
       bots_list: () => ({ bots, projects, sections, hosts: [{ id: "host", name: "Local", connected: !offline }, { id: "remote", name: "Remote", connected: !offline }], personalProjectId, warnings: [], threadBindings: [], projectOwners: [] }),
       section_create: (raw) => { const { name } = rpcContract.section_create.input.parse(raw); const section = { id: "section", name, order: 0 }; sections.push(section); return section; },
@@ -24,7 +24,6 @@ async function mount({ projectFailures = 0, botFailures = 0, offline = false } =
       bot_prepare: () => bots[0],
     },
   });
-  host.track(slot);
   await waitFor(() => expect(slot.queryByText("Loading bots…")).toBeNull());
   return { slot, bots, projects, onNavigate };
 }
@@ -101,7 +100,7 @@ it("only lists linked projects and offers a searchable explicit existing-project
 it("retains the inline new-project draft across tabs and links it as Owner only on bot Save", async () => {
   const { slot } = await mount(); const dialog = await botProject(slot); fillProject(dialog);
   expect((within(dialog).getByRole("button", { name: "Create bot" }) as HTMLButtonElement).disabled).toBe(true);
-  fireEvent.click(within(dialog).getByRole("tab", { name: "Instructions" }));
+  fireEvent.click(within(dialog).getByRole("tab", { name: "Context" }));
   fireEvent.change(within(dialog).getByRole("textbox", { name: "SOUL.md" }), { target: { value: "Keep my bot draft" } });
   fireEvent.click(within(dialog).getByRole("tab", { name: /^Projects/ }));
   expect((within(dialog).getByRole("textbox", { name: "Project name" }) as HTMLInputElement).value).toBe("Client app");

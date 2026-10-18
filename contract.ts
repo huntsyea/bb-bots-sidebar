@@ -2,6 +2,7 @@ import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { AVATAR_EXPRESSION_IDS, AVATAR_MOTION_IDS, AVATAR_SHAPE_IDS } from "./lib/appearance";
 import { newThreadRequestSchema } from "./lib/new-thread-request";
+import { launchPresetSchema } from "./lib/launch-preset";
 
 import { MEMORY_MAX_CHARS, MEMORY_LIMIT_ERROR } from "./lib/memory-limit";
 import { SIDEBAR_MODES } from "./lib/sidebar-mode";
@@ -22,6 +23,7 @@ export const metadataSchema = z.object({
   hostId: id, stateReady: z.boolean(), legacyHomeProjectId: id.nullable(), linkedProjectIds: z.array(id),
   mainThreadId: id.nullable(), hiddenUntilActivity: z.boolean(), hiddenAt: z.number().nullable(),
   threadOrder: z.array(id).optional(),
+  launchPreset: launchPresetSchema.nullable().optional(),
   sectionId: id.nullable(), order: z.number().int().nonnegative(),
   // agents and its hash are archived compatibility data, never injected or editable.
   // Keep the old read limit so oversized existing memory can be read and condensed.
@@ -93,8 +95,8 @@ export const rpcContract = defineRpcContract({
   bots_list: { input: z.null(), output: z.object({ bots: z.array(metadataSchema), hosts: z.array(hostSchema), sections: z.array(sectionSchema), projects: z.array(projectSchema), threadBindings: z.array(z.object({ threadId: id, botId: id }).strict()), warnings: z.array(z.string()), personalProjectId: id, projectOwners: z.array(projectOwnerSchema).optional() }).strict() },
   project_browse: { input: projectBrowseInputSchema, output: projectBrowseOutputSchema },
   project_create: { input: projectCreateInputSchema, output: projectSchema },
-  bot_create: { input: z.object({ ...editFields, hostId: id }).strict(), output: metadataSchema },
-  bot_update: { input: z.object({ ...editFields, hostId: id.optional(), botId: id, expectedUpdatedAt: z.number(), expectedStateHashes: stateHashesSchema }).strict(), output: metadataSchema },
+  bot_create: { input: z.object({ ...editFields, hostId: id, launchPreset: launchPresetSchema.nullable().optional() }).strict(), output: metadataSchema },
+  bot_update: { input: z.object({ ...editFields, hostId: id.optional(), launchPreset: launchPresetSchema.nullable().optional(), botId: id, expectedUpdatedAt: z.number(), expectedStateHashes: stateHashesSchema }).strict(), output: metadataSchema },
   bot_prepare: { input: z.object({ botId: id }).strict(), output: metadataSchema },
   bots_reorder: { input: z.object({ bots: z.array(z.object({ botId: id, sectionId: id.nullable() }).strict()).max(500) }).strict(), output: z.object({ ok: z.literal(true) }).strict() },
   section_create: { input: z.object({ name: z.string().trim().min(1).max(80) }).strict(), output: sectionSchema },

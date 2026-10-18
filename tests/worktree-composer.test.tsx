@@ -4,8 +4,9 @@ import type { NewThreadComposerProps } from "@get-bb/plugin-sdk/app";
 import { rpcContract, type BotMetadata } from "../contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { bot, personalProjectId, request, thread, sidebarProject, threadActionHost } from "./fixtures";
+import { loadPluginApp } from "@get-bb/plugin-sdk/testing/app";
+import { renderSlot } from "./sidebar-host";
+import { bot, personalProjectId, request, thread } from "./fixtures";
 import { conversationDraftKey, worktreeLaunchEnvironment } from "../lib/worktree-launch";
 
 const composer = vi.hoisted(() => ({ props: null as NewThreadComposerProps | null }));
@@ -35,14 +36,13 @@ async function mount({
   rows = [thread("main", 100)],
   bindings = [{ botId: bot.id, threadId: "main" }, { botId: bot.id, threadId: "0" }],
 }: { bots?: BotMetadata[]; rows?: ReturnType<typeof thread>[]; bindings?: Array<{ botId: string; threadId: string }> } = {}) {
-  const host = threadActionHost();
   const slot = renderSlot(app.threadLists[0]!, {
     activeThreadId: "main", activeProjectId: "project", isCompactViewport: false, onNavigate: vi.fn(), searchQuery: "",
-  }, { ...host.options,
+  }, {
     sidebarThreads: { projects: [
-      sidebarProject("project", "Shared project"),
-      sidebarProject("second", "Second project"),
-      sidebarProject("unrelated", "Brand new unrelated project"),
+      { id: "project", name: "Shared project", isPersonal: false, href: "/projects/project", settingsHref: "/projects/project/settings" },
+      { id: "second", name: "Second project", isPersonal: false, href: "/projects/project", settingsHref: "/projects/project/settings" },
+      { id: "unrelated", name: "Brand new unrelated project", isPersonal: false, href: "/projects/project", settingsHref: "/projects/project/settings" },
     ], threads: rows },
     rpc: {
       bots_list: async () => rpcContract.bots_list.output.parse({
@@ -58,7 +58,6 @@ async function mount({
       conversation_create: () => rpcContract.conversation_create.output.parse({ threadId: "created-conversation" }),
     },
   });
-  host.track(slot);
   await waitFor(() => expect(slot.queryByText("Loading bots…")).toBeNull());
   for (const toggle of slot.queryAllByRole("button", { name: /^Expand conversations for / })) fireEvent.click(toggle);
   return slot;
@@ -85,7 +84,7 @@ describe("new conversation in worktree", () => {
 
   it("seeds a fresh worktree on the clicked conversation machine and never reuses its environment", async () => {
     const slot = await mount({
-      rows: [thread("main", 100), thread("0", 90, { host: { id: "remote", name: "Remote" }, environment: { id: "env-existing", name: null, branchName: "feature", path: "/tmp/env-existing", isWorktree: true, providerId: null, workspaceDisplayKind: "managed-worktree" } })],
+      rows: [thread("main", 100), thread("0", 90, { host: { id: "remote", name: "Remote" }, environment: { id: "env-existing", name: null, branchName: "feature", providerId: null, path: "/workspace", isWorktree: true, workspaceDisplayKind: "managed-worktree" } })],
     });
     fireEvent.contextMenu(slot.getByText("Conversation 0"));
     fireEvent.click(await slot.findByRole("menuitem", { name: "New conversation in worktree…" }));

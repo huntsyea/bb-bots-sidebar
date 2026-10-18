@@ -4,9 +4,10 @@ import { isWorking } from "../lib/conversations";
 export function conversationStatus(thread: PluginSidebarThread) {
   // Pending input takes precedence; background work must not look completed
   // just because the foreground turn has produced an unread result.
-  const state = thread.hasPendingInteraction || thread.indicator === "waiting-for-input" ? "waiting"
+  const state = thread.hasPendingInteraction || thread.indicator === "waiting-for-input" || thread.runtimeStatus === "waiting-for-host" ? "waiting"
     : isWorking(thread) ? "working"
-    : thread.indicator === "unread-error" ? "error"
+    : thread.indicator === "unread-error" || thread.indicator === "queued-failed" ? "error"
+    : thread.indicator === "queued-waiting" ? "waiting"
     : thread.indicator === "draft" ? "draft"
     : thread.indicator === "none" || thread.indicator === "unread-success" ? "done"
     : "unknown";

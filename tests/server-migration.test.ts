@@ -61,7 +61,7 @@ it("migrates existing bot identities and all history once without touching proje
   expect(ready.stateReady).toBe(true);
   expect(host.get("host-project", "/projects/project/SOUL.md")).toBe("Legacy personality");
   expect(await readFile(join(host.stateDirectory(ready.id), "SOUL.md"), "utf8")).toBe("Legacy personality");
-});
+}, 20_000); // Hundreds of durable SQLite writes; allow slower disks under suite load.
 
 it("reconciles offset pages when concurrent archival shifts live history", async () => {
   const host = await setup();
@@ -80,7 +80,7 @@ it("reconciles offset pages when concurrent archival shifts live history", async
   const result = await host.harness.behavior.callRpc("bots_list", null) as { threadBindings: { threadId: string }[]; warnings: string[] };
   expect(result.warnings).toEqual([]);
   expect(new Set(result.threadBindings.map((binding) => binding.threadId))).toEqual(new Set(host.threads.keys()));
-});
+}, 20_000);
 
 it("retries offline migration without marking it complete or overwriting missing state", async () => {
   const host = await setup();

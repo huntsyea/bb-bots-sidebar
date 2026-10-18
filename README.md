@@ -1,5 +1,11 @@
 # Bots Sidebar
 
+Requires BB 0.46.1 or newer (Plugin SDK 0.6.49). Conversation menus and archive
+buttons use BB's native thread actions, including confirmation, Undo, and actions
+from other plugins. Rows follow native titles, links, draft indicators, plugin
+statuses, and keyboard shortcuts. Provider session options from the native new
+conversation composer are preserved when starting a bot conversation.
+
 Bots are identities, not projects or working directories. A bot has a name,
 avatar, operating instructions, memory, and linked projects. Its state stays
 private in BB and follows its conversations through embedded instructions and
@@ -9,6 +15,27 @@ New conversations default to a project the bot owns, or to a personal workspace
 when it owns none. Explicit project/worktree starts can choose any available work
 project and join the selected bot to it. Creating a bot never creates a
 backing BB project or writes `SOUL.md` into a repository.
+
+## New conversation defaults
+
+In **Edit bot → Bot → New conversations**, choose an optional preferred
+harness, model, reasoning level, and service tier using BB's native picker.
+Permissions follow the project unless you enable **Custom permissions**. The
+pickers use the selected machine's live capabilities; BB reconciles unsupported
+selections when opening the composer.
+
+Choose **Fresh worktree** to make the bot's + start a new worktree when it owns
+a project. Without an owned project, + still opens a personal conversation.
+Explicit project/worktree actions keep their requested environment, and forks
+keep their existing behavior. A **Starter prompt** prefills an empty new-chat
+draft; it never sends automatically or replaces an existing draft.
+
+Defaults are private bot metadata, saved with the rest of the editor in one
+revision-checked transaction. Existing bots inherit project defaults. The
+composer captures defaults when opened and remains editable; later refreshes
+cannot reset a draft, and the server never reapplies a preset over your submitted
+choices. Provider-specific session options remain available in the composer;
+saved presets do not override them.
 
 ## Preview
 
@@ -41,8 +68,10 @@ and are not execution workspaces. Agents do not need their physical locations.
 | `MEMORY.md` | Durable facts and preferences; at most 3,000 characters |
 | `settings.json` | Structured bot preferences; a JSON object up to 16,384 characters |
 
-**Edit bot** is the single editor: **Instructions** contains SOUL.md;
-**State** contains MEMORY.md / settings.json. Its explicit Save commits changes
+**Edit bot** has three tabs: **Bot**, **Context**, and **Projects**. Context has
+one document picker for SOUL.md, MEMORY.md, and settings.json. Click the avatar
+for appearance controls, or the small dice beside it to randomize its appearance.
+Its explicit Save commits changes
 together with revision/hash checks; invalid JSON or conflicts never partially save
 other fields. Use this editor or the state tools—not direct edits to exports.
 Export failures do not lose committed state or prevent conversations.
@@ -173,8 +202,8 @@ in bot state.
   then smaller gray dots. Reduced motion disables all activity animations.
 - **Main** is the invisible default section. Explicit custom sections retain their
   headings. Drag bots to reorder/move; the Section picker includes **Create New…**.
-- Create/Edit stays compact: small avatar, name/role, Setup / Instructions / State /
-  Projects / Appearance tabs, one file editor, and an always-visible footer.
+- Create/Edit stays compact: small avatar with a dice button, name/role, Bot /
+  Context / Projects tabs, one file editor, and an always-visible footer.
   New bots get a random appearance once per draft; existing bots stay unchanged.
   Appearance offers **8 shapes, 16 expressions, 3 idle motions, and 14 coloured
   presets**, with no black/white/neutral presets. **Randomize appearance** rerolls
@@ -238,7 +267,7 @@ switching storage versions; the prior code checkpoint is
 
 ## Develop
 
-Use BB 0.42 or newer and Node.js 24. No BB-core change is required for this model.
+Use BB 0.46.1 or newer and Node.js 24. No BB-core change is required for this model.
 
 ```sh
 git clone --branch main https://github.com/tobi/bb-bots-sidebar.git

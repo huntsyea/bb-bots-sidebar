@@ -5,8 +5,9 @@ import { rpcContract, type BotMetadata } from "../contract";
 import { selectOption } from "./select-helper";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { bot, personalEnvironment, personalProjectId, request, thread, sidebarProject, sidebarActionCalls, threadActionHost } from "./fixtures";
+import { loadPluginApp } from "@get-bb/plugin-sdk/testing/app";
+import { renderSlot } from "./sidebar-host";
+import { bot, personalEnvironment, personalProjectId, request, thread } from "./fixtures";
 
 const personalRequest = { ...request, projectId: personalProjectId, environment: personalEnvironment };
 
@@ -31,15 +32,14 @@ async function mount({
   bots = [bot], rows = [thread("main", 100)], bindings = [{ botId: bot.id, threadId: "main" }], activeThreadId = "main", warnings = [], prepareFailures = 0, preparedMainThreadId, projectOwners = [], beforeList,
 }: { bots?: BotMetadata[]; rows?: ReturnType<typeof thread>[]; bindings?: Binding[]; activeThreadId?: string | null; warnings?: string[]; prepareFailures?: number; preparedMainThreadId?: string; projectOwners?: Array<{ projectId: string; botId: string }>; beforeList?: () => Promise<void> } = {}) {
   const onNavigate = vi.fn();
-  const host = threadActionHost();
   const slot = renderSlot(app.threadLists[0]!, {
     activeThreadId, activeProjectId: "project", isCompactViewport: false, onNavigate, searchQuery: "",
-  }, { ...host.options,
+  }, {
     sidebarThreads: { projects: [
-      sidebarProject("project", "Shared project"),
-      sidebarProject("second", "Second project"),
-      sidebarProject("unrelated", "Brand new unrelated project"),
-      sidebarProject("legacy-project", "Legacy backing project"),
+      { id: "project", name: "Shared project", isPersonal: false, href: "/projects/project", settingsHref: "/projects/project/settings" },
+      { id: "second", name: "Second project", isPersonal: false, href: "/projects/project", settingsHref: "/projects/project/settings" },
+      { id: "unrelated", name: "Brand new unrelated project", isPersonal: false, href: "/projects/project", settingsHref: "/projects/project/settings" },
+      { id: "legacy-project", name: "Legacy backing project", isPersonal: false, href: "/projects/project", settingsHref: "/projects/project/settings" },
     ], threads: rows },
     rpc: {
       bots_list: async () => { await beforeList?.(); return rpcContract.bots_list.output.parse({ bots: [...bots], hosts: [{ id: "host", name: "Local", connected: true }, { id: "remote", name: "Remote", connected: true }], sections: [], projects: [{ id: "project", name: "Shared project" }, { id: "second", name: "Second project" }, { id: "unrelated", name: "Brand new unrelated project" }], threadBindings: [...bindings], warnings, personalProjectId, projectOwners }); },
@@ -74,7 +74,6 @@ async function mount({
       visibility_set: () => bot,
     },
   });
-  host.track(slot);
   await waitFor(() => expect(slot.queryByText("Loading bots…")).toBeNull());
   for (const toggle of slot.queryAllByRole("button", { name: /^Expand conversations for / })) fireEvent.click(toggle);
   return { slot, onNavigate };
@@ -135,7 +134,7 @@ describe("independent bot identities", () => {
     expect(slot.inspection.rpcCalls).toContainEqual({ method: "bot_prepare", input: { botId: "solo" } });
     expect(composer.props?.defaultProjectId).toBe(personalProjectId);
     expect(composer.props?.defaultEnvironment).toEqual(personalEnvironment);
-    expect(sidebarActionCalls(slot)).toEqual([]);
+    expect(slot.inspection.navigateCalls).toEqual([]);
     // The personal project comes from bots_list, not the sidebar project cache.
     expect(slot.inspection.rpcCalls.map((call) => call.method)).toEqual(["bots_list", "bot_prepare", "bots_list"]);
     await act(() => composer.props!.onSubmit(personalRequest));
@@ -149,7 +148,7 @@ describe("independent bot identities", () => {
     await slot.findByRole("dialog", { name: "New conversation" });
     expect(composer.props?.defaultProjectId).toBe(personalProjectId);
     expect(composer.props?.defaultEnvironment).toEqual(personalEnvironment);
-    expect(sidebarActionCalls(slot)).toEqual([]);
+    expect(slot.inspection.navigateCalls).toEqual([]);
     expect(slot.inspection.navigateCalls).toEqual([]);
     expect(slot.inspection.rpcCalls.some((call) => call.method === "main_set" || call.method === "conversation_create")).toBe(false);
     await act(() => composer.props!.onSubmit(personalRequest));
@@ -159,7 +158,7 @@ describe("independent bot identities", () => {
   it("opens a visible unarchived main through the host sidebar action", async () => {
     const { slot } = await mount();
     fireEvent.click(slot.getByRole("button", { name: /^Test bot/ }));
-    expect(sidebarActionCalls(slot)).toContainEqual({ method: "open", threadId: "main" });
+    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "main" });
     expect(slot.inspection.rpcCalls.some((call) => call.method === "bot_prepare")).toBe(false);
   });
 
@@ -168,7 +167,7 @@ describe("independent bot identities", () => {
     fireEvent.click(slot.getByRole("button", { name: /^Test bot/ }));
     await slot.findByRole("dialog", { name: "New conversation" });
     expect(slot.inspection.navigateCalls).toEqual([]);
-    expect(sidebarActionCalls(slot)).toEqual([]);
+    expect(slot.inspection.navigateCalls).toEqual([]);
     expect(slot.getByRole("dialog", { name: "New conversation" })).toBeTruthy();
     expect(slot.inspection.rpcCalls.some((call) => call.method === "main_set" || call.method === "conversation_create")).toBe(false);
   });
@@ -235,7 +234,7 @@ describe("independent bot identities", () => {
     await menu(slot, bot.name, "Add / manage projects…");
     const dialog = await slot.findByRole("dialog", { name: "Edit bot" });
     expect(within(dialog).getByRole("tab", { name: /^Projects/ }).getAttribute("aria-selected")).toBe("true");
-    fireEvent.click(within(dialog).getByRole("tab", { name: "Setup" }));
+    fireEvent.click(within(dialog).getByRole("tab", { name: "Bot" }));
     expect(within(dialog).queryByRole("textbox", { name: "Home folder" })).toBeNull();
     expect(within(dialog).getByText(/State is stored privately in BB/)).toBeTruthy();
     expect(dialog.querySelector(".bot-home-path")).toBeNull();
@@ -245,7 +244,7 @@ describe("independent bot identities", () => {
     expect((within(dialog).getByRole("combobox", { name: "Shared project role" }) as HTMLSelectElement).value).toBe("member");
     expect(within(dialog).queryByRole("combobox", { name: "Legacy backing project role" })).toBeNull();
     fireEvent.change(within(dialog).getByRole("textbox", { name: "Bot name" }), { target: { value: "Renamed bot" } });
-    fireEvent.click(within(dialog).getByRole("tab", { name: "Instructions" }));
+    fireEvent.click(within(dialog).getByRole("tab", { name: "Context" }));
     fireEvent.change(within(dialog).getByRole("textbox", { name: "SOUL.md" }), { target: { value: "Work carefully\nKeep history" } });
     fireEvent.click(within(dialog).getByRole("tab", { name: /^Projects/ }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Unlink Shared project" }));
@@ -272,7 +271,7 @@ describe("independent bot identities", () => {
     expect(within(dialog).getByText(/State is stored privately in BB/)).toBeTruthy();
     expect(within(dialog).queryByRole("button", { name: /Use custom|Use automatic/ })).toBeNull();
     expect(dialog.textContent).not.toMatch(/~\/bots|Home folder|Working directory/);
-    for (const label of ["Instructions", /^Projects/, "Appearance", "Setup"]) {
+    for (const label of ["Context", /^Projects/, "Bot"]) {
       fireEvent.click(within(dialog).getByRole("tab", { name: label }));
       expect(within(dialog).queryByRole("textbox", { name: /folder|path|directory/i })).toBeNull();
     }
@@ -296,7 +295,7 @@ describe("independent bot identities", () => {
     expect(composer.props?.defaultProjectId).toBe(personalProjectId);
     expect(composer.props?.defaultEnvironment).toEqual({ type: "host", hostId: "remote", workspace: { type: "personal" } });
     expect(slot.inspection.rpcCalls.every((call) => ["bots_list", "bot_create", "bot_prepare"].includes(call.method))).toBe(true);
-    expect(sidebarActionCalls(slot)).toEqual([]);
+    expect(slot.inspection.navigateCalls).toEqual([]);
   });
 
   it("retries private state preparation after creation without creating another identity", async () => {
@@ -410,7 +409,7 @@ describe("independent bot identities", () => {
     const legacy = { ...bot, legacyHomeProjectId: "legacy-project" };
     const { slot } = await mount({ bots: [legacy], rows: [thread("main", 100, { projectId: "legacy-project" })] });
     fireEvent.click(slot.getByRole("button", { name: /^Test bot/ }));
-    expect(sidebarActionCalls(slot)).toContainEqual({ method: "open", threadId: "main" });
+    expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "main" });
     await menu(slot, bot.name, "New conversation…");
     await slot.findByRole("dialog", { name: "New conversation" });
     expect(composer.props?.defaultProjectId).toBe(personalProjectId);

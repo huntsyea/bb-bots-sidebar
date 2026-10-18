@@ -21,7 +21,7 @@ const CATEGORIES = [
 
 type Category = (typeof CATEGORIES)[number]["id"];
 
-export function AvatarAppearance({ avatar, onChange }: { avatar: BotAvatar; onChange: (avatar: BotAvatar) => void }) {
+export function AvatarAppearance({ avatar, onChange, showRandomize = true }: { avatar: BotAvatar; onChange: (avatar: BotAvatar) => void; showRandomize?: boolean }) {
   const [category, setCategory] = useState<Category>("expression");
   return (
     <div className="space-y-3">
@@ -33,9 +33,9 @@ export function AvatarAppearance({ avatar, onChange }: { avatar: BotAvatar; onCh
             </Button>
           ))}
         </div>
-        <Button type="button" variant="outline" size="sm" className="h-7 shrink-0" onClick={() => onChange(randomAvatar())}>
+        {showRandomize ? <Button type="button" variant="outline" size="sm" className="h-7 shrink-0" onClick={() => onChange(randomAvatar())}>
           Randomize appearance
-        </Button>
+        </Button> : null}
       </div>
       {category === "color" ? (
         <fieldset>

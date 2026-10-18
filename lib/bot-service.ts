@@ -50,12 +50,13 @@ export function createBotService({ bb, store, state, publish, importLegacy, seri
     if (projectId !== await personalProjectId() && !bot.linkedProjectIds.includes(projectId)) throw new Error("Choose a projectless conversation or link this project to the bot first");
   }
 
-  function createBot({ name, role, hostId, avatar, sectionId, linkedProjectIds, ownedProjectIds, soul, memory, settings }: BotCreateInput): Promise<BotMetadata> {
+  function createBot({ name, role, hostId, avatar, sectionId, linkedProjectIds, ownedProjectIds, soul, memory, settings, launchPreset }: BotCreateInput): Promise<BotMetadata> {
     return serial("registry", async () => {
       await importLegacy(); await validateLinks(linkedProjectIds); if (ownedProjectIds) await validateLinks(ownedProjectIds); validateSection(sectionId);
       await validateHost(hostId);
       const id = `bot_${randomUUID().replaceAll("-", "")}`;
       let created: BotMetadata = { id, name, role, hostId, stateReady: true, legacyHomeProjectId: null, avatar, sectionId, linkedProjectIds, soul, agents: "", memory: "", settings: {}, stateHashes: { ...EMPTY_HASHES }, order: store.list().length, mainThreadId: null, hiddenUntilActivity: false, hiddenAt: null, updatedAt: Date.now(), legacyProjectId: null };
+      if (launchPreset !== undefined) created.launchPreset = launchPreset;
       if (memory !== undefined) created = applyState(created, "MEMORY.md", memory);
       if (settings !== undefined) created = applyState(created, "settings.json", stateContent({ ...created, settings }, "settings.json"));
       store.saveWithProjects(created, ownedProjectIds);

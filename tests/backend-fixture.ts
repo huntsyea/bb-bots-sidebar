@@ -29,7 +29,7 @@ export async function backend(initialProjects: Project[] = [project()]) {
   const get = (hostId: string, path: string) => files.get(key(hostId, path));
   let sequence = 0;
   let failSpawn = false;
-  let host = createFakePluginHost({ pluginId: "bots-sidebar", sdk: {
+  let host = createFakePluginHost({ pluginId: "bots-sidebar", agentSkillIds: ["bots-sidebar"], sdk: {
     projects: {
       list: async (args) => args?.includePersonal ? [...projects, personal] : projects,
       get: async ({ projectId }) => { const found = [...projects, personal].find((p) => p.id === projectId); if (!found) throw new Error("Project missing"); return found; },

@@ -30,7 +30,7 @@ export function conversationOwners(
 }
 
 function buildConversationTree(threads: readonly PluginSidebarThread[], mainThreadId: string | null, activeThreadId: string | null) {
-  const rows = threads.filter((thread) => !thread.isArchived && thread.id !== mainThreadId);
+  const rows = threads.filter((thread) => !thread.isArchived && !thread.isHidden && thread.id !== mainThreadId);
   const byId = new Map(rows.map((thread) => [thread.id, thread]));
   const childrenByParent = new Map<string, PluginSidebarThread[]>();
   const roots: PluginSidebarThread[] = [];

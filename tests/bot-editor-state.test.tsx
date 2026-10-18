@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { loadPluginApp } from "@get-bb/plugin-sdk/testing/app";
+import { renderSlot } from "./sidebar-host";
 import type { z } from "zod";
 import { rpcContract, type BotMetadata } from "../contract";
-import { bot, personalProjectId, thread, sidebarProject, threadActionHost } from "./fixtures";
+import { bot, personalProjectId, thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -14,9 +15,8 @@ type Update = z.infer<typeof rpcContract.bot_update.input>;
 async function mount({ update, prepareFailures = 0, expectFailure = false }: { update?: (input: Update) => BotMetadata | Promise<BotMetadata>; prepareFailures?: number; expectFailure?: boolean } = {}) {
   let current: BotMetadata = { ...bot, id: "remote-bot", name: "Remote bot", hostId: "remote", stateReady: false, soul: "Stale cached identity" };
   const onNavigate = vi.fn();
-  const host = threadActionHost();
-  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: "main", activeProjectId: "project", isCompactViewport: false, onNavigate, searchQuery: "" }, { ...host.options,
-    sidebarThreads: { projects: [sidebarProject("project", "Unrelated checkout")], threads: [thread("main", 100)] },
+  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: "main", activeProjectId: "project", isCompactViewport: false, onNavigate, searchQuery: "" }, {
+    sidebarThreads: { projects: [{ id: "project", name: "Unrelated checkout", isPersonal: false, href: "/projects/project", settingsHref: "/projects/project/settings" }], threads: [thread("main", 100)] },
     rpc: {
       bots_list: () => ({ bots: [{ ...current }], hosts: [], sections: [], projects: [], warnings: [], personalProjectId, threadBindings: [{ botId: current.id, threadId: "main" }] }),
       bot_prepare: () => {
@@ -32,21 +32,20 @@ async function mount({ update, prepareFailures = 0, expectFailure = false }: { u
       },
     },
   });
-  host.track(slot);
   async function open() { fireEvent.contextMenu(await slot.findByText(current.name)); expect(slot.queryByRole("menuitem", { name: "View bot state…" })).toBeNull(); fireEvent.click(await slot.findByRole("menuitem", { name: "Edit bot…" })); }
   await open();
   const dialog = expectFailure ? null : await slot.findByRole("dialog", { name: "Edit bot" });
   return { slot, dialog: dialog!, onNavigate, open, getCurrent: () => current, changeCurrent: (patch: Partial<BotMetadata>) => { current = { ...current, ...patch }; } };
 }
 function file(dialog: HTMLElement, name: "SOUL.md" | "MEMORY.md" | "settings.json") {
-  fireEvent.click(within(dialog).getByRole("tab", { name: name === "SOUL.md" ? "Instructions" : "State" }));
-  if (name !== "SOUL.md") fireEvent.click(within(dialog).getByRole("button", { name }));
+  fireEvent.click(within(dialog).getByRole("tab", { name: "Context" }));
+  fireEvent.change(within(dialog).getByRole("combobox", { name: "Context document" }), { target: { value: name } });
   return within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name });
 }
 
 it("puts the three active logical files in Edit bot with one Save and no separate state action", async () => {
   const { slot, dialog, onNavigate } = await mount();
-  expect(within(dialog).getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Setup", "Instructions", "State", "Projects · 1", "Appearance"]);
+  expect(within(dialog).getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Bot", "Context", "Projects · 1"]);
   expect(file(dialog, "SOUL.md").value).toBe("Fresh private identity");
   expect(file(dialog, "MEMORY.md").value).toBe("- A private fact.\n");
   expect(JSON.parse(file(dialog, "settings.json").value)).toEqual({ style: "concise" });
@@ -64,7 +63,7 @@ it("retains every draft across tabs and atomically submits all files with origin
   const memory = file(dialog, "MEMORY.md"); expect(fireEvent.keyDown(memory, { key: "Enter" })).toBe(true);
   fireEvent.change(memory, { target: { value: "- New memory.\n" } });
   fireEvent.change(file(dialog, "settings.json"), { target: { value: '{"style":"detailed","nested":{"enabled":true}}' } });
-  fireEvent.click(within(dialog).getByRole("tab", { name: "Appearance" }));
+  fireEvent.click(within(dialog).getByRole("tab", { name: "Bot" }));
   expect(file(dialog, "MEMORY.md").value).toBe("- New memory.\n");
   expect(file(dialog, "SOUL.md").value).toBe("New soul\nSecond line");
   expect(slot.inspection.rpcCalls.some(call => call.method === "bot_update")).toBe(false);
@@ -92,7 +91,7 @@ it.each(["{", "[]", "null", "4", '{"limit":1e400}'])("retains invalid settings %
   const { slot, dialog } = await mount();
   fireEvent.change(file(dialog, "MEMORY.md"), { target: { value: "Unsaved memory" } });
   fireEvent.change(file(dialog, "settings.json"), { target: { value: invalid } });
-  fireEvent.click(within(dialog).getByRole("tab", { name: "Setup" }));
+  fireEvent.click(within(dialog).getByRole("tab", { name: "Bot" }));
   fireEvent.click(within(dialog).getByRole("button", { name: "Save bot" }));
   await within(dialog).findByRole("alert");
   expect(within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "settings.json" }).value).toBe(invalid);

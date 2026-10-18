@@ -3,6 +3,7 @@ import { experimental_NewThreadComposer as NewThreadComposer } from "@get-bb/plu
 import type { NewThreadRequest } from "@get-bb/plugin-sdk/app";
 import type { BotMetadata } from "../contract";
 import { conversationDraftKey } from "../lib/worktree-launch";
+import { launchComposerSeeds } from "../lib/launch-preset";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 
 export type ConversationTarget = {
@@ -22,6 +23,7 @@ export function ConversationDialog({ target, onClose, onCreate }: {
   // The target is captured when the popup opens. Let the host's own project
   // picker handle changes without re-seeding and resetting the user's choices.
   const projectId = target.projectId;
+  const seeds = target.kind === "fork" ? {} : launchComposerSeeds(target.bot.launchPreset);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const submitting = useRef(false);
@@ -36,7 +38,7 @@ export function ConversationDialog({ target, onClose, onCreate }: {
   return <Dialog open onOpenChange={(open) => { if (!open && !submitting.current) onClose(); }}>
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl" onOpenAutoFocus={(event) => event.preventDefault()}>
       <DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription>{description}</DialogDescription></DialogHeader>
-      <NewThreadComposer defaultProjectId={projectId} defaultEnvironment={target.environment} layout="document" focusRequest={1} draftKey={conversationDraftKey({ botId: target.bot.id, kind: target.kind, makeMain: target.makeMain, projectId, environment: target.environment })} onSubmit={async (request) => {
+      <NewThreadComposer {...seeds} defaultProjectId={projectId} defaultEnvironment={target.environment} layout="document" focusRequest={1} draftKey={conversationDraftKey({ botId: target.bot.id, kind: target.kind, makeMain: target.makeMain, projectId, environment: target.environment })} onSubmit={async (request) => {
         if (submitting.current) throw new Error("A conversation is already being created.");
         submitting.current = true; setPending(true); setError(null);
         try { await onCreate(request); }

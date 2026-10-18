@@ -4,10 +4,13 @@ import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { useConversationDrop } from "./hooks/use-conversation-drop";
 import { useConversationReorder } from "./hooks/use-conversation-reorder";
-import { useArchiveThread, useSidebarThreadActions } from "./hooks/use-sidebar-thread-actions";
-import type { SidebarThreadActions } from "./hooks/use-sidebar-thread-actions";
+import { threadActionTarget } from "./lib/thread-action-target";
 import {
   definePluginApp,
+  experimental_ThreadActionsContextMenu as ThreadActionsContextMenu,
+  useSdk,
+  useSidebarThreadShortcut,
+  ThreadTitle,
   experimental_useSidebarThreadSplit,
   experimental_useSidebarThreads,
   useRealtime,
@@ -18,6 +21,7 @@ import {
 import type {
   NewThreadRequest,
   PluginSidebarThread,
+  BbNavigate,
   PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import type { BotAvatar, BotMetadata, BotSection, ProjectOwner, rpcContract } from "./contract";
@@ -33,11 +37,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { RenameConversationDialog } from "@/components/rename-conversation-dialog";
-import { ConversationStatusIcon } from "@/components/conversation-status-icon";
+import { SidebarConversationStatus } from "@/components/sidebar-conversation-status";
 import { BotActivityBadge } from "@/components/bot-activity-badge";
 import { ConversationArchiveButton } from "@/components/conversation-archive-button";
 import { BotNewConversationButton } from "@/components/bot-new-conversation-button";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ResizableChats } from "@/components/resizable-chats";
 import { SidebarModeTabs } from "@/components/sidebar-mode-tabs";
 import { BotChangeApprovalForm } from "@/components/bot-change-approval";
@@ -47,6 +51,7 @@ import type { ConversationTarget } from "@/components/conversation-dialog";
 import { AssignConversationDialog } from "@/components/assign-conversation-dialog";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import * as Popover from "@radix-ui/react-popover";
 import { MachineSelect } from "./components/machine-select";
 import { BotProjectsPanel } from "./components/bot-projects-panel";
 import { ProjectCreateDialog } from "./components/project-create-dialog";
@@ -58,15 +63,17 @@ import { AvatarAppearance } from "./components/avatar-appearance";
 import { BotIcon } from "./components/bot-icon";
 import { SidebarBotIcon } from "./components/sidebar-bot-icon";
 import { MEMORY_MAX_CHARS } from "./lib/memory-limit";
+import { emptyLaunchPreset, launchPresetSchema, type LaunchPreset } from "./lib/launch-preset";
+import { LaunchPresetEditor } from "./components/launch-preset-editor";
 import "./style.css";
 
 const MENU_ITEM_CLASS = "bot-menu-item cursor-default select-none rounded-sm px-2 py-1.5 text-xs outline-none data-[disabled]:opacity-40";
 
 type HostOption = { id: string; name: string; connected: boolean };
 type ProjectOption = { id: string; name: string };
-type BotEditFields = Pick<BotMetadata, "hostId" | "name" | "role" | "avatar" | "sectionId" | "linkedProjectIds" | "soul" | "settings"> & { ownedProjectIds: string[]; memory?: string };
+type BotEditFields = Pick<BotMetadata, "hostId" | "name" | "role" | "avatar" | "sectionId" | "linkedProjectIds" | "soul" | "settings" | "launchPreset"> & { ownedProjectIds: string[]; memory?: string };
 type ProjectRole = "none" | "member" | "owner";
-type EditorTab = "setup" | "instructions" | "state" | "projects" | "appearance";
+type EditorTab = "setup" | "context" | "projects";
 type EditorTarget =
   | { kind: "create" }
   | { kind: "edit"; metadata: BotMetadata; projectOwners: ProjectOwner[]; tab?: EditorTab };
@@ -167,8 +174,10 @@ function BotEditor({ target, hosts, sections, projects, bots, projectOwners, onC
   const [role, setRole] = useState(editing ? target.metadata.role : "Assistant");
   const [hostId, setHostId] = useState(editing ? target.metadata.hostId : hosts.find((host) => host.connected)?.id ?? hosts[0]?.id ?? "");
   const [memory, setMemory] = useState(editing ? target.metadata.memory : "");
+  const [launchPreset, setLaunchPreset] = useState<LaunchPreset>(() => editing && target.metadata.launchPreset ? target.metadata.launchPreset : emptyLaunchPreset());
   const [settingsText, setSettingsText] = useState(() => `${JSON.stringify(editing ? target.metadata.settings : {}, null, 2)}\n`);
-  const [stateFile, setStateFile] = useState<"MEMORY.md" | "settings.json">("MEMORY.md");
+  const [stateFile, setStateFile] = useState<"SOUL.md" | "MEMORY.md" | "settings.json">("SOUL.md");
+  const portalScope = usePortalScopeProps();
   const initialOwners = editing ? target.projectOwners : projectOwners;
   const [owners] = useState(initialOwners);
   const [botNames] = useState(() => new Map(bots.map((bot) => [bot.id, bot.name])));
@@ -190,7 +199,7 @@ function BotEditor({ target, hosts, sections, projects, bots, projectOwners, onC
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<EditorTab>(editing ? target.tab ?? "setup" : "setup");
   const tabsId = useId();
-  const tabs = [{ id: "setup", label: "Setup" }, { id: "instructions", label: "Instructions" }, { id: "state", label: "State" }, { id: "projects", label: `Projects${linkedProjectIds.length ? ` · ${linkedProjectIds.length}` : ""}` }, { id: "appearance", label: "Appearance" }] as const;
+  const tabs = [{ id: "setup", label: "Bot" }, { id: "context", label: "Context" }, { id: "projects", label: `Projects${linkedProjectIds.length ? ` · ${linkedProjectIds.length}` : ""}` }] as const;
   function setProjectRole(projectId: string, next: ProjectRole) {
     const otherOwner = owners.find((owner) => owner.projectId === projectId && owner.botId !== botId);
     if (next === "owner" && otherOwner) return;
@@ -209,21 +218,23 @@ function BotEditor({ target, hosts, sections, projects, bots, projectOwners, onC
   }
   function closeEditor() {
     if (saving.current || pending || projectPending) return;
-    const stateDirty = editing && (memory !== target.metadata.memory || settingsText !== `${JSON.stringify(target.metadata.settings, null, 2)}\n`);
+    const stateDirty = editing && (memory !== target.metadata.memory || settingsText !== `${JSON.stringify(target.metadata.settings, null, 2)}\n` || JSON.stringify(launchPreset) !== JSON.stringify(target.metadata.launchPreset ?? emptyLaunchPreset()));
     if (!stateDirty || window.confirm("Discard unsaved bot state changes?")) onClose();
   }
   async function submit() {
     if (saving.current || pending || projectPending || projectDraft || sectionDraft !== null) return;
     saving.current = true; setPending(true); setError(null);
     try {
+      const preset = launchPresetSchema.safeParse(launchPreset);
+      if (!preset.success) { setTab("setup"); throw new Error(preset.error.issues[0]?.message ?? "Check the new conversation defaults."); }
       let parsed: unknown;
       try { parsed = JSON.parse(settingsText, (_key, value: unknown) => { if (typeof value === "number" && !Number.isFinite(value)) throw new Error("Settings numbers must be finite"); return value; }); }
-      catch { setTab("state"); setStateFile("settings.json"); throw new Error("settings.json must contain valid JSON. Your draft is kept."); }
-      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") { setTab("state"); setStateFile("settings.json"); throw new Error("settings.json must contain a JSON object. Your draft is kept."); }
-      if (`${JSON.stringify(parsed, null, 2)}\n`.length > 16384) { setTab("state"); setStateFile("settings.json"); throw new Error("settings.json is too large (maximum 16384 characters). Your draft is kept."); }
+      catch { setTab("context"); setStateFile("settings.json"); throw new Error("settings.json must contain valid JSON. Your draft is kept."); }
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") { setTab("context"); setStateFile("settings.json"); throw new Error("settings.json must contain a JSON object. Your draft is kept."); }
+      if (`${JSON.stringify(parsed, null, 2)}\n`.length > 16384) { setTab("context"); setStateFile("settings.json"); throw new Error("settings.json is too large (maximum 16384 characters). Your draft is kept."); }
       const memoryChanged = !editing || memory !== target.metadata.memory;
-      if (memoryChanged && memory.length > MEMORY_MAX_CHARS) { setTab("state"); setStateFile("MEMORY.md"); throw new Error("MEMORY.md must be at most 3000 characters. Shorten your draft before saving; it has been kept."); }
-      const fields = { hostId, name: name.trim(), role: role.trim(), avatar, sectionId, soul, ...(memoryChanged ? { memory } : {}), settings: parsed as BotMetadata["settings"], linkedProjectIds, ownedProjectIds };
+      if (memoryChanged && memory.length > MEMORY_MAX_CHARS) { setTab("context"); setStateFile("MEMORY.md"); throw new Error("MEMORY.md must be at most 3000 characters. Shorten your draft before saving; it has been kept."); }
+      const fields = { hostId, name: name.trim(), role: role.trim(), avatar, sectionId, soul, ...(memoryChanged ? { memory } : {}), settings: parsed as BotMetadata["settings"], linkedProjectIds, ownedProjectIds, launchPreset: preset.data.execution || preset.data.initialPrompt || preset.data.workspace !== "checkout" ? preset.data : null };
       if (target.kind === "edit") await onUpdate(fields);
       else await onCreate({ ...fields, hostId });
       onClose();
@@ -237,9 +248,17 @@ function BotEditor({ target, hosts, sections, projects, bots, projectOwners, onC
           <DialogDescription>An identity, private state, and optional linked projects.</DialogDescription>
         </DialogHeader>
         <div className="flex shrink-0 items-end gap-3 px-4 pb-3">
-          <button type="button" className="flex size-14 shrink-0 items-center justify-center rounded-lg hover:bg-state-hover" aria-label="Customize avatar" onClick={() => setTab("appearance")}>
-            <BotIcon avatar={avatar} size={48} label="Bot preview" />
-          </button>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <Popover.Root>
+              <Popover.Trigger asChild><button type="button" disabled={pending} className="flex size-14 shrink-0 items-center justify-center rounded-lg hover:bg-state-hover" aria-label="Customize avatar" title="Customize appearance"><BotIcon avatar={avatar} size={48} label="Bot preview" /></button></Popover.Trigger>
+              <Popover.Portal><Popover.Content {...portalScope} aria-label="Bot appearance" align="start" sideOffset={6} className="z-50 max-h-[60vh] w-72 max-w-[calc(100vw-24px)] overflow-y-auto rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-md">
+                <fieldset disabled={pending}><AvatarAppearance avatar={avatar} onChange={setAvatar} showRandomize={false} /></fieldset>
+              </Popover.Content></Popover.Portal>
+            </Popover.Root>
+            <Tooltip><TooltipTrigger asChild><Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0 text-muted-foreground" disabled={pending} aria-label="Randomize appearance" onClick={() => setAvatar(randomAvatar())}>
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="3" y="3" width="18" height="18" rx="4" /><g fill="currentColor" stroke="none"><circle cx="8" cy="8" r="1.5" /><circle cx="16" cy="8" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="8" cy="16" r="1.5" /><circle cx="16" cy="16" r="1.5" /></g></svg>
+            </Button></TooltipTrigger><TooltipContent>Randomize appearance</TooltipContent></Tooltip>
+          </div>
           <div className="grid min-w-0 flex-1 grid-cols-2 gap-3">
             <label className="min-w-0 space-y-1 text-xs font-medium text-muted-foreground">Bot name<Input autoFocus className="h-8" value={name} maxLength={120} onChange={(event) => setName(event.target.value)} placeholder="Research bot" /></label>
             <label className="min-w-0 space-y-1 text-xs font-medium text-muted-foreground">Role<Input className="h-8" value={role} maxLength={80} onChange={(event) => setRole(event.target.value)} placeholder="Assistant" /></label>
@@ -270,23 +289,21 @@ function BotEditor({ target, hosts, sections, projects, bots, projectOwners, onC
               </div>
               <MachineSelect hosts={hosts} value={hostId} onValueChange={setHostId} disabled={pending} />
             </div>
-            <p className="text-xs text-muted-foreground">State is stored privately in BB and included in this bot’s instructions. Machine is the default for new conversations, not a storage location.</p>
+            <p className="text-[11px] text-muted-foreground">State is stored privately in BB. Machine is the default for new conversations.</p>
+            <LaunchPresetEditor value={launchPreset} onChange={setLaunchPreset} hostId={hostId} disabled={pending} />
           </div> : null}
-          {tab === "instructions" ? <div className="flex h-full min-h-0 flex-col gap-2">
+          {tab === "context" ? <div className="flex h-full min-h-0 flex-col gap-2">
             <div className="flex shrink-0 items-center justify-between gap-2">
-              <span className="text-xs font-medium">SOUL.md</span>
-              <span className="text-[10px] text-muted-foreground">{soul.length}/4096</span>
+              <select aria-label="Context document" className="h-7 min-w-0 rounded border border-input bg-background px-2 text-xs text-foreground" value={stateFile} onChange={(event) => setStateFile(event.target.value as typeof stateFile)}>
+                <option value="SOUL.md">Instructions · SOUL.md</option><option value="MEMORY.md">Memory · MEMORY.md</option><option value="settings.json">Settings · settings.json</option>
+              </select>
+              <span className="text-[10px] text-muted-foreground">{(stateFile === "SOUL.md" ? soul : stateFile === "MEMORY.md" ? memory : settingsText).length}/{stateFile === "SOUL.md" ? 4096 : stateFile === "MEMORY.md" ? MEMORY_MAX_CHARS : 16384}</span>
             </div>
-            <textarea aria-label="SOUL.md" className="min-h-24 w-full flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground" value={soul} maxLength={4096} disabled={pending} onChange={(event) => setSoul(event.target.value)} onKeyDown={(event) => event.stopPropagation()} onKeyUp={(event) => event.stopPropagation()} placeholder="Personality, perspective, and communication style." />
-          </div> : null}
-          {tab === "state" ? <div className="flex h-full min-h-0 flex-col gap-2">
-            <div className="flex shrink-0 items-center justify-between gap-2"><div role="group" aria-label="State file" className="flex gap-1">{(["MEMORY.md", "settings.json"] as const).map((file) => <Button key={file} type="button" variant="ghost" size="sm" className="h-7 px-2" aria-pressed={stateFile === file} onClick={() => setStateFile(file)}>{file}</Button>)}</div><span className="text-[10px] text-muted-foreground">{(stateFile === "MEMORY.md" ? memory : settingsText).length}/{stateFile === "MEMORY.md" ? MEMORY_MAX_CHARS : 16384}</span></div>
-            <textarea aria-label={stateFile} className="min-h-24 w-full flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 font-mono text-xs text-foreground" value={stateFile === "MEMORY.md" ? memory : settingsText} maxLength={stateFile === "MEMORY.md" ? undefined : 16384} disabled={pending} spellCheck={false} onKeyDown={(event) => event.stopPropagation()} onKeyUp={(event) => event.stopPropagation()} onChange={(event) => stateFile === "MEMORY.md" ? setMemory(event.target.value) : setSettingsText(event.target.value)} />
+            <textarea aria-label={stateFile} className="min-h-24 w-full flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 font-mono text-xs text-foreground" value={stateFile === "SOUL.md" ? soul : stateFile === "MEMORY.md" ? memory : settingsText} maxLength={stateFile === "SOUL.md" ? 4096 : stateFile === "MEMORY.md" ? undefined : 16384} disabled={pending} spellCheck={stateFile === "SOUL.md"} onKeyDown={(event) => event.stopPropagation()} onKeyUp={(event) => event.stopPropagation()} onChange={(event) => stateFile === "SOUL.md" ? setSoul(event.target.value) : stateFile === "MEMORY.md" ? setMemory(event.target.value) : setSettingsText(event.target.value)} placeholder={stateFile === "SOUL.md" ? "Personality, perspective, and communication style." : undefined} />
             {stateFile === "MEMORY.md" && memory.length > MEMORY_MAX_CHARS ? <p role="status" className="text-xs text-destructive">Memory exceeds 3000 characters. Shorten it before saving a memory change. Existing text is kept.</p> : null}
             <p className="shrink-0 text-[10px] text-muted-foreground">Private to this bot. Saved together with the bot; don’t store credentials here.</p>
           </div> : null}
           <div hidden={tab !== "projects"}><BotProjectsPanel projects={projects} owners={owners} botNames={botNames} botId={botId} botName={name} hostId={hostId} hosts={hosts} linkedProjectIds={linkedProjectIds} ownedProjectIds={ownedProjectIds} onRoleChange={setProjectRole} onBusyChange={setProjectPending} onDraftChange={setProjectDraft} onCreateProject={onCreateProject} onBrowseProjects={onBrowseProjects} /></div>
-          {tab === "appearance" ? <AvatarAppearance avatar={avatar} onChange={setAvatar} /> : null}
         </div>
         {error ? <p role="alert" className="max-h-20 shrink-0 overflow-y-auto px-4 pb-2 text-xs text-destructive">{error}</p> : null}
         <DialogFooter className="shrink-0 border-t border-border px-4 py-3"><Button type="button" variant="ghost" disabled={pending || projectPending} onClick={closeEditor}>Cancel</Button><Button type="button" onClick={() => void submit()} disabled={pending || projectPending || projectDraft || sectionDraft !== null || !name.trim() || (!editing && !hostId)}>{pending ? "Saving..." : editing ? "Save bot" : "Create bot"}</Button></DialogFooter>
@@ -308,25 +325,26 @@ function RowContextMenu({ children, items }: { children: ReactElement; items: Me
   </ContextMenu.Root>;
 }
 
-function ConversationContextMenu({ children, thread, actions, archive, onNavigate, items = [] }: {
+function ConversationContextMenu({ children, thread, items = [], dragging }: {
   children: ReactElement;
   thread: PluginSidebarThread;
-  actions: SidebarThreadActions;
-  /** The row's archive action from useArchiveThread; null while bb offers none. */
-  archive: (() => void) | null;
-  onNavigate: () => void;
   items?: MenuItem[];
+  dragging?: boolean;
 }) {
   const [renaming, setRenaming] = useState(false);
+  const sdk = useSdk();
   return <>
-    <RowContextMenu items={[
-      ...items,
-      { label: "Rename…", action: () => setRenaming(true) },
-      { label: "Open in split", action: () => { actions.open(thread.id, { split: true }); onNavigate(); } },
-      { label: thread.isUnread ? "Mark as read" : "Mark as unread", action: () => { actions.setRead(thread.id, thread.isUnread).catch(() => toast.error("Could not update the conversation's read state.")); } },
-      { label: "Archive conversation", disabled: !archive, action: () => archive?.() },
-    ]}>{children}</RowContextMenu>
-    {renaming ? <RenameConversationDialog title={thread.title ?? thread.titleFallback ?? "Untitled conversation"} onSave={(title) => actions.rename(thread.id, title)} onClose={() => setRenaming(false)} /> : null}
+    <ThreadActionsContextMenu
+      thread={threadActionTarget(thread)}
+      dragging={dragging}
+      requestRename={() => setRenaming(true)}
+      inline={items.map((item) => ({
+        key: item.label,
+        group: "00-bots",
+        action: { label: item.label, icon: "MessageCircle", disabled: item.disabled, run: item.action },
+      }))}
+    >{children}</ThreadActionsContextMenu>
+    {renaming ? <RenameConversationDialog title={thread.title ?? thread.titleFallback ?? "Untitled conversation"} onSave={async (title) => { await sdk.threads.update({ threadId: thread.id, title }); }} onClose={() => setRenaming(false)} /> : null}
   </>;
 }
 
@@ -353,15 +371,14 @@ function BranchToggle({ title, count, expanded, childrenId, onToggle }: { title:
 
 type ReorderConversation = (threadId: string, targetThreadId: string, position: "before" | "after") => void;
 
-function ThreadRow({ thread, siblings, childrenByParent, activePath, actions, activeThreadId, onNavigate, onReorder, onNewInWorktree, onFork, onNest, onArchive, reorderDrag }: {
-  thread: PluginSidebarThread; siblings: PluginSidebarThread[]; childrenByParent: Map<string, PluginSidebarThread[]>; activePath: Set<string>; actions: SidebarThreadActions; activeThreadId: string | null; onNavigate: () => void; onReorder: ReorderConversation; onNewInWorktree: (thread: PluginSidebarThread) => void; onFork: (thread: PluginSidebarThread) => void; onNest: (threadId: string, parentThreadId: string) => void; onArchive: (threadId: string) => void; reorderDrag: ReturnType<typeof useConversationReorder>;
+function ThreadRow({ thread, siblings, childrenByParent, activePath, navigate, activeThreadId, onNavigate, onReorder, onNewInWorktree, onFork, onNest, reorderDrag }: {
+  thread: PluginSidebarThread; siblings: PluginSidebarThread[]; childrenByParent: Map<string, PluginSidebarThread[]>; activePath: Set<string>; navigate: BbNavigate; activeThreadId: string | null; onNavigate: () => void; onReorder: ReorderConversation; onNewInWorktree: (thread: PluginSidebarThread) => void; onFork: (thread: PluginSidebarThread) => void; onNest: (threadId: string, parentThreadId: string) => void; reorderDrag: ReturnType<typeof useConversationReorder>;
 }) {
   const split = experimental_useSidebarThreadSplit(thread.id);
-  // One lookup per row, shared by the inline button and the context menu.
-  const archive = useArchiveThread(thread);
+  const shortcut = useSidebarThreadShortcut(thread.id);
   const children = childrenByParent.get(thread.id) ?? [];
   const branch = useConversationBranch(thread.id, activeThreadId, activePath);
-  const title = thread.title ?? thread.titleFallback ?? "Untitled conversation";
+  const title = thread.displayTitle ?? thread.title ?? thread.titleFallback ?? "Untitled conversation";
   const [dropPosition, setDropPosition] = useState<"before" | "after" | "inside" | null>(null);
   const position = (event: DragEvent) => {
     const bounds = event.currentTarget.querySelector(".thread-row")!.getBoundingClientRect();
@@ -385,19 +402,19 @@ function ThreadRow({ thread, siblings, childrenByParent, activePath, actions, ac
       if (event.shiftKey) onNest(source, thread.id);
       else onReorder(source, thread.id, position(event));
     }
-  }}><ConversationContextMenu thread={thread} actions={actions} archive={archive} onNavigate={onNavigate} items={[
+  }}><ConversationContextMenu thread={thread} dragging={reorderDrag.drag?.threadId === thread.id} items={[
     { label: "New conversation in worktree…", action: () => onNewInWorktree(thread) },
     { label: "Fork in same environment…", action: () => onFork(thread) },
     { label: "Move to top", action: () => onReorder(thread.id, siblings[0]!.id, "before"), disabled: siblings[0]?.id === thread.id },
   ]}>
     <div draggable onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-bb-thread-id", thread.id); }} className="thread-row flex min-h-7 items-center rounded-md text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground" aria-current={activeThreadId === thread.id ? "page" : undefined} data-active-descendant={!branch.expanded && branch.containsActive}>
-      <a {...split.splitProps} onPointerDown={(event) => { split.splitProps.onPointerDown?.(event); reorderDrag.begin(thread, event); }} ref={branch.rowRef} role="link" tabIndex={0} aria-current={activeThreadId === thread.id ? "page" : undefined} onKeyDown={(event) => { if (event.key === "Enter") { actions.open(thread.id, { split: event.metaKey || event.ctrlKey }); onNavigate(); } }} data-sidebar-thread-shortcut-target="" data-sidebar-thread-id={thread.id} className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 py-1 pr-1" onClick={(event) => { event.preventDefault(); actions.open(thread.id, { split: event.metaKey || event.ctrlKey }); onNavigate(); }}>
-        <ConversationStatusIcon thread={thread} /><span className="min-w-0 flex-1 truncate">{title}</span>
+      <a href={thread.href} {...split.splitProps} onPointerDown={(event) => { split.splitProps.onPointerDown?.(event); reorderDrag.begin(thread, event); }} ref={branch.rowRef} role="link" tabIndex={0} aria-current={activeThreadId === thread.id ? "page" : undefined} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); navigate.toThread(thread.id, { split: event.metaKey || event.ctrlKey }); onNavigate(); } }} data-sidebar-thread-shortcut-target="" data-sidebar-thread-id={thread.id} aria-keyshortcuts={shortcut?.ariaKeyshortcuts} className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 py-1 pr-1" onClick={(event) => { event.preventDefault(); navigate.toThread(thread.id, { split: event.metaKey || event.ctrlKey }); onNavigate(); }}>
+        <SidebarConversationStatus thread={thread} /><span className="min-w-0 flex-1 truncate"><ThreadTitle threadId={thread.id} /></span>{shortcut ? <kbd className="shrink-0 rounded bg-muted px-1 text-[9px]">{shortcut.label}</kbd> : null}
       </a>
-      <ConversationArchiveButton thread={thread} archive={archive} onArchive={onArchive} />
+      <ConversationArchiveButton thread={thread} />
       <BranchToggle title={title} count={children.length} expanded={branch.expanded} childrenId={branch.childrenId} onToggle={branch.toggle} />
     </div>
-  </ConversationContextMenu>{children.length ? <ul id={branch.childrenId} className="conversation-children" hidden={!branch.expanded}>{branch.expanded ? children.map((child) => <ThreadRow key={child.id} thread={child} siblings={children} childrenByParent={childrenByParent} activePath={activePath} actions={actions} activeThreadId={activeThreadId} onNavigate={onNavigate} onReorder={onReorder} onNewInWorktree={onNewInWorktree} onFork={onFork} onNest={onNest} onArchive={onArchive} reorderDrag={reorderDrag} />) : null}</ul> : null}</li>;
+  </ConversationContextMenu>{children.length ? <ul id={branch.childrenId} className="conversation-children" hidden={!branch.expanded}>{branch.expanded ? children.map((child) => <ThreadRow key={child.id} thread={child} siblings={children} childrenByParent={childrenByParent} activePath={activePath} navigate={navigate} activeThreadId={activeThreadId} onNavigate={onNavigate} onReorder={onReorder} onNewInWorktree={onNewInWorktree} onFork={onFork} onNest={onNest} reorderDrag={reorderDrag} />) : null}</ul> : null}</li>;
 }
 
 function BotGroup({
@@ -406,7 +423,7 @@ function BotGroup({
   threads,
   selected,
   activeThreadId,
-  actions,
+  navigate,
   topicsVisible,
   onToggleTopics,
   onEdit,
@@ -418,7 +435,6 @@ function BotGroup({
   onNewInWorktree,
   onFork,
   onNest,
-  onArchive,
   onNewConversation,
   onNewInProject,
   hasWorkProjects,
@@ -432,7 +448,7 @@ function BotGroup({
   threads: PluginSidebarThread[];
   selected: boolean;
   activeThreadId: string | null;
-  actions: SidebarThreadActions;
+  navigate: BbNavigate;
   topicsVisible: boolean;
   onToggleTopics: () => void;
   onEdit: (tab?: EditorTab) => void;
@@ -444,7 +460,6 @@ function BotGroup({
   onNewInWorktree: (thread?: PluginSidebarThread) => void;
   onFork: (thread: PluginSidebarThread) => void;
   onNest: (threadId: string, parentThreadId: string) => void;
-  onArchive: (threadId: string) => void;
   onNewConversation: () => void;
   onNewInProject: () => void;
   hasWorkProjects: boolean;
@@ -459,7 +474,7 @@ function BotGroup({
   const dropToTop = conversationDropTarget === "first" || Boolean(reorderDrag.target?.botRow);
   const dropHint = conversationDropTarget === "first" ? "Make first" : conversationDropTarget === "last" ? "Add to end" : dropToTop ? "Drop to make top conversation" : null;
   const portalScope = usePortalScopeProps();
-  const renderThread = (thread: PluginSidebarThread) => <ThreadRow key={thread.id} thread={thread} siblings={roots} childrenByParent={childrenByParent} activePath={activePath} actions={actions} activeThreadId={activeThreadId} onNavigate={onNavigate} onReorder={onReorder} onNewInWorktree={onNewInWorktree} onFork={onFork} onNest={onNest} onArchive={onArchive} reorderDrag={reorderDrag} />;
+  const renderThread = (thread: PluginSidebarThread) => <ThreadRow key={thread.id} thread={thread} siblings={roots} childrenByParent={childrenByParent} activePath={activePath} navigate={navigate} activeThreadId={activeThreadId} onNavigate={onNavigate} onReorder={onReorder} onNewInWorktree={onNewInWorktree} onFork={onFork} onNest={onNest} reorderDrag={reorderDrag} />;
   const botSelected = selected || threads.some((thread) => thread.id === activeThreadId);
   const latest = roots[0];
   const subtitle = [metadata.role, ownedProjectNames.join(", ")].filter(Boolean).join(" · ");
@@ -508,68 +523,66 @@ function RecentRow({
   thread,
   childrenByParent,
   activePath,
-  actions,
+  navigate,
   activeThreadId,
   onNavigate,
   onAssign,
   onConversationDrag,
-  onArchive,
   draggingThreadId,
 }: {
   thread: PluginSidebarThread;
   childrenByParent: Map<string, PluginSidebarThread[]>;
   activePath: Set<string>;
-  actions: SidebarThreadActions;
+  navigate: BbNavigate;
   activeThreadId: string | null;
   onNavigate: () => void;
   onAssign: (thread: PluginSidebarThread) => void;
   onConversationDrag: (thread: PluginSidebarThread, event: ReactPointerEvent<HTMLElement>) => void;
-  onArchive: (threadId: string) => void;
   draggingThreadId: string | null;
 }) {
   const split = experimental_useSidebarThreadSplit(thread.id);
-  // One lookup per row, shared by the inline button and the context menu.
-  const archive = useArchiveThread(thread);
+  const shortcut = useSidebarThreadShortcut(thread.id);
   const children = childrenByParent.get(thread.id) ?? [];
   const branch = useConversationBranch(thread.id, activeThreadId, activePath);
-  const title = thread.title ?? thread.titleFallback ?? "Untitled conversation";
+  const title = thread.displayTitle ?? thread.title ?? thread.titleFallback ?? "Untitled conversation";
   const detail = thread.environment?.branchName ?? thread.host?.name ?? "Personal conversation";
   return (
     <li>
-      <ConversationContextMenu thread={thread} actions={actions} archive={archive} onNavigate={onNavigate} items={[{ label: "Assign to bot…", action: () => onAssign(thread) }]}>
+      <ConversationContextMenu thread={thread} dragging={draggingThreadId === thread.id} items={[{ label: "Assign to bot…", action: () => onAssign(thread) }]}>
       <div className="recent-row flex min-h-6 items-center rounded-md px-1 hover:bg-state-hover" data-conversation-dragging={draggingThreadId === thread.id} aria-current={activeThreadId === thread.id ? "page" : undefined} data-active-descendant={!branch.expanded && branch.containsActive}>
       <a
+        href={thread.href}
         {...split.splitProps}
         onPointerDown={(event) => { split.splitProps.onPointerDown?.(event); onConversationDrag(thread, event); }}
         ref={branch.rowRef}
         role="link"
         tabIndex={0}
-        onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); actions.open(thread.id, { split: event.metaKey || event.ctrlKey }); onNavigate(); } }}
+        onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); navigate.toThread(thread.id, { split: event.metaKey || event.ctrlKey }); onNavigate(); } }}
         data-sidebar-thread-shortcut-target=""
-        data-sidebar-thread-id={thread.id}
+        data-sidebar-thread-id={thread.id} aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
         className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 py-0.5"
         aria-current={activeThreadId === thread.id ? "page" : undefined}
         onClick={(event) => {
           event.preventDefault();
-          actions.open(thread.id, { split: event.metaKey || event.ctrlKey });
+          navigate.toThread(thread.id, { split: event.metaKey || event.ctrlKey });
           onNavigate();
         }}
       >
         <span className="flex size-5 shrink-0 items-center justify-center">
-          <ConversationStatusIcon thread={thread} />
+          <SidebarConversationStatus thread={thread} />
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
-            <span className="min-w-0 flex-1 truncate text-[10px] font-medium leading-3 text-foreground">{title}</span>
+            <span className="min-w-0 flex-1 truncate text-[10px] font-medium leading-3 text-foreground"><ThreadTitle threadId={thread.id} /></span>{shortcut ? <kbd className="shrink-0 rounded bg-muted px-1 text-[9px]">{shortcut.label}</kbd> : null}
           </span>
           <span className="block truncate text-[8px] leading-[10px] text-muted-foreground">{detail}</span>
         </span>
       </a>
-      <ConversationArchiveButton thread={thread} archive={archive} onArchive={onArchive} />
+      <ConversationArchiveButton thread={thread} />
       <BranchToggle title={title} count={children.length} expanded={branch.expanded} childrenId={branch.childrenId} onToggle={branch.toggle} />
       </div>
       </ConversationContextMenu>
-      {children.length ? <ul id={branch.childrenId} className="conversation-children" hidden={!branch.expanded}>{branch.expanded ? children.map((child) => <RecentRow key={child.id} thread={child} childrenByParent={childrenByParent} activePath={activePath} actions={actions} activeThreadId={activeThreadId} onNavigate={onNavigate} onAssign={onAssign} onConversationDrag={onConversationDrag} draggingThreadId={draggingThreadId} onArchive={onArchive} />) : null}</ul> : null}
+      {children.length ? <ul id={branch.childrenId} className="conversation-children" hidden={!branch.expanded}>{branch.expanded ? children.map((child) => <RecentRow key={child.id} thread={child} childrenByParent={childrenByParent} activePath={activePath} navigate={navigate} activeThreadId={activeThreadId} onNavigate={onNavigate} onAssign={onAssign} onConversationDrag={onConversationDrag} draggingThreadId={draggingThreadId} />) : null}</ul> : null}
     </li>
   );
 }
@@ -583,7 +596,6 @@ function storedShowChats() {
 
 function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
   const sidebar = experimental_useSidebarThreads();
-  const actions = useSidebarThreadActions();
   const navigate = useBbNavigate();
   const portalScope = usePortalScopeProps();
   const [conversation, setConversation] = useState<ConversationTarget | null>(null);
@@ -621,7 +633,6 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
     threadRow.scrollIntoView?.({ block: "nearest", inline: "nearest", behavior: "instant" });
     setDroppedConversation(null);
   }, [droppedConversation, shownTopicBots, threadBindings, sidebar.threads]);
-  const [locallyArchived, setLocallyArchived] = useState<Set<string>>(() => new Set());
   const [draggedBotId, setDraggedBotId] = useState<string | null>(null);
   const preparing = useRef(false);
   const projectCatalog = JSON.stringify(sidebar.projects.map(({ id, name, isPersonal }) => [id, name, isPersonal]));
@@ -639,7 +650,7 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
     run(async () => {
       await assignConversation(thread, botId, placeFirst);
       toast.success(`Conversation assigned to ${bots.find(bot => bot.id === botId)?.name ?? "bot"}`, {
-        action: { label: "View", onClick: () => { actions.open(thread.id); onNavigate(); } },
+        action: { label: "View", onClick: () => { navigate.toThread(thread.id); onNavigate(); } },
       });
     });
   }, (botId) => bots.some(bot => bot.id === botId), (_thread, element, _x, _y, shiftKey) => {
@@ -671,23 +682,12 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
 
   function reportError(cause: unknown) { setActionError(cause instanceof Error ? cause.message : String(cause)); }
   function run(action: () => Promise<unknown>) { setActionError(null); void action().catch(reportError); }
-  function archiveThread(threadId: string) {
-    // BB archives the entire subtree. Do not momentarily promote its children
-    // to the first root while waiting for the sidebar snapshot to catch up.
-    const archived = new Set([threadId]);
-    const pending = [threadId];
-    while (pending.length) {
-      const parent = pending.pop();
-      for (const row of sidebar.threads) if (row.parentThreadId === parent && !archived.has(row.id)) { archived.add(row.id); pending.push(row.id); }
-    }
-    setLocallyArchived(current => new Set([...current, ...archived]));
-  }
   function nestConversation(threadId: string, parentThreadId: string) {
     run(async () => { await rpc.call("conversation_nest", { threadId, parentThreadId }); await refresh(); });
   }
 
   function firstConversation(bot: BotMetadata) {
-    return orderedBotConversationTree((threadsByBot.get(bot.id) ?? []).filter(thread => !locallyArchived.has(thread.id)), bot.threadOrder).roots[0];
+    return orderedBotConversationTree((threadsByBot.get(bot.id) ?? []), bot.threadOrder).roots[0];
   }
 
   async function assignConversation(thread: PluginSidebarThread, botId: string, placeFirst?: boolean) {
@@ -762,7 +762,8 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
       }
       if (!prepared.stateReady) throw new Error("The bot’s private state could not be prepared. Try again.");
       if (ownedProjectId) {
-        setConversation({ bot: prepared, kind: "project", projectId: ownedProjectId, environment: projectLaunchEnvironment(prepared.hostId), makeMain: false });
+        const worktree = prepared.launchPreset?.workspace === "worktree";
+        setConversation({ bot: prepared, kind: worktree ? "worktree" : "project", projectId: ownedProjectId, environment: worktree ? worktreeLaunchEnvironment(prepared.hostId) : projectLaunchEnvironment(prepared.hostId), makeMain: false });
         return;
       }
       if (!personalId) throw new Error("BB’s personal project is not available. Refresh and try again.");
@@ -806,15 +807,15 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
 
   async function openBot(bot: BotMetadata) {
     const first = firstConversation(bot);
-    if (first) { actions.open(first.id); onNavigate(); }
+    if (first) { navigate.toThread(first.id); onNavigate(); }
     else await openBotConversation(bot);
   }
 
   const chatsTree = useMemo(() => conversationTree(
-    sidebar.threads.filter((thread) => !owners.has(thread.id) && !locallyArchived.has(thread.id)),
+    sidebar.threads.filter((thread) => !owners.has(thread.id)),
     null, activeThreadId, 8,
-  ), [sidebar.threads, owners, activeThreadId, locallyArchived]);
-  const renderChat = (thread: PluginSidebarThread) => <RecentRow key={thread.id} thread={thread} childrenByParent={chatsTree.childrenByParent} activePath={chatsTree.activePath} actions={actions} activeThreadId={activeThreadId} onNavigate={onNavigate} onAssign={setAssigning} onConversationDrag={(row, event) => { if (!owners.has(row.id) && !assignmentRequests.current.has(row.id)) conversationDrop.begin(row, event); }} draggingThreadId={conversationDrop.drag?.threadId ?? null} onArchive={archiveThread} />;
+  ), [sidebar.threads, owners, activeThreadId]);
+  const renderChat = (thread: PluginSidebarThread) => <RecentRow key={thread.id} thread={thread} childrenByParent={chatsTree.childrenByParent} activePath={chatsTree.activePath} navigate={navigate} activeThreadId={activeThreadId} onNavigate={onNavigate} onAssign={setAssigning} onConversationDrag={(row, event) => { if (!owners.has(row.id) && !assignmentRequests.current.has(row.id)) conversationDrop.begin(row, event); }} draggingThreadId={conversationDrop.drag?.threadId ?? null} />;
   return (
     <TooltipProvider>
     <div ref={sidebarElement} className="bots-sidebar flex h-full min-h-0 flex-col overflow-hidden px-1.5 pb-1.5" data-conversation-dragging={Boolean(conversationDrop.drag)}>
@@ -845,14 +846,14 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
             {section.id === null && section.bots.length === 0 && draggedBotId ? <div className="rounded border border-dashed border-border px-2 py-2 text-[10px] text-muted-foreground">Move to Main</div> : null}
             <div className="space-y-px">{section.bots.map((metadata, index) => {
               const botId = metadata.id;
-              const botThreads = (threadsByBot.get(botId) ?? []).filter((thread) => !thread.isArchived && !locallyArchived.has(thread.id));
+              const botThreads = (threadsByBot.get(botId) ?? []).filter((thread) => !thread.isArchived);
               return <div key={botId} onDragOver={(event) => { if (draggedBotId && draggedBotId !== botId) event.preventDefault(); }} onDrop={(event) => {
                 event.preventDefault(); event.stopPropagation();
                 const bounds = event.currentTarget.querySelector(".project-row")?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
                 const beforeBotId = event.clientY > bounds.top + bounds.height / 2 ? section.bots[index + 1]?.id ?? null : botId;
                 if (draggedBotId && draggedBotId !== botId) run(() => moveBot(draggedBotId, section.id, beforeBotId));
                 setDraggedBotId(null);
-              }}><BotGroup metadata={metadata} threads={botThreads} selected={botId === selectedBotId} activeThreadId={activeThreadId} actions={actions} topicsVisible={shownTopicBots.has(botId)}
+              }}><BotGroup metadata={metadata} threads={botThreads} selected={botId === selectedBotId} activeThreadId={activeThreadId} navigate={navigate} topicsVisible={shownTopicBots.has(botId)}
                 ownedProjectNames={projectOwners.filter(owner => owner.botId === botId).map(owner => projects.find(project => project.id === owner.projectId)?.name ?? "Unavailable project")}
                 onToggleTopics={() => setShownTopicBots((current) => { const next = new Set(current); if (next.has(botId)) next.delete(botId); else next.add(botId); return next; })}
                 onEdit={(tab) => run(() => editBot(metadata, tab))} hidden={hiddenIds.has(botId)}
@@ -863,7 +864,7 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
                 onNewInProject={() => openLinked(metadata, "project")}
                 hasWorkProjects={availableWorkProjects(projects, metadata, personalProjectId).length > 0}
                 onNewInWorktree={(thread) => openLinked(metadata, "worktree", thread)}
-                onFork={(thread) => openFork(metadata, thread)} onNest={nestConversation} onArchive={archiveThread}
+                onFork={(thread) => openFork(metadata, thread)} onNest={nestConversation}
                 onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", botId); setDraggedBotId(botId); }}
                 onDragEnd={() => setDraggedBotId(null)} dragging={draggedBotId === botId} conversationDropTarget={outsideDropTarget?.botId === botId ? outsideDropTarget.placeFirst ? "first" : "last" : null} onNavigate={onNavigate} /></div>;
             })}</div>
@@ -880,12 +881,12 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
         </div> : null}
       </div>
       {showChats ? <ResizableChats activeChatId={activeThreadId && !owners.has(activeThreadId) ? activeThreadId : null} onNewChat={() => {
-        actions.openNewThread({ ...(personalProjectId ? { projectId: personalProjectId } : {}), focusPrompt: true });
+        navigate.toCompose({ ...(personalProjectId ? { projectId: personalProjectId } : {}), focusPrompt: true });
         onNavigate();
       }}>
         <ul>
-          {chatsTree.recent.filter((thread) => !locallyArchived.has(thread.id)).map(renderChat)}
-          {chatsTree.other.length ? <li><button type="button" className="flex min-h-7 w-full items-center gap-1 rounded-md px-1 text-left text-[10px] text-muted-foreground hover:bg-state-hover" aria-expanded={showOtherChats} aria-controls={chatsOtherId} onClick={() => setShowOtherChats((current) => !current)}><span className={showOtherChats ? "rotate-90" : ""}><TinyIcon name="chevron" /></span>{chatsTree.other.length} Other</button><ul id={chatsOtherId} hidden={!showOtherChats}>{showOtherChats ? chatsTree.other.filter((thread) => !locallyArchived.has(thread.id)).map(renderChat) : null}</ul></li> : null}
+          {chatsTree.recent.map(renderChat)}
+          {chatsTree.other.length ? <li><button type="button" className="flex min-h-7 w-full items-center gap-1 rounded-md px-1 text-left text-[10px] text-muted-foreground hover:bg-state-hover" aria-expanded={showOtherChats} aria-controls={chatsOtherId} onClick={() => setShowOtherChats((current) => !current)}><span className={showOtherChats ? "rotate-90" : ""}><TinyIcon name="chevron" /></span>{chatsTree.other.length} Other</button><ul id={chatsOtherId} hidden={!showOtherChats}>{showOtherChats ? chatsTree.other.map(renderChat) : null}</ul></li> : null}
         </ul>
       </ResizableChats> : null}
       {editingSection ? <RenameConversationDialog title={editingSection.name} heading="Rename section" description="Choose the section name shown in the sidebar." onClose={() => setEditingSection(null)} onSave={async (name) => {

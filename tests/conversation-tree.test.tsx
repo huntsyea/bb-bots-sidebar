@@ -2,8 +2,9 @@
 import { useState } from "react";
 import { afterEach, expect, it } from "vitest";
 import { cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { bot, personalProjectId, thread, sidebarProject, sidebarActionCalls, threadActionHost } from "./fixtures";
+import { loadPluginApp } from "@get-bb/plugin-sdk/testing/app";
+import { renderSlot } from "./sidebar-host";
+import { bot, personalProjectId, thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 const Sidebar = app.threadLists[0]!.component;
@@ -25,12 +26,10 @@ async function mount(personal: boolean, older = false) {
       <Sidebar activeThreadId={activeThreadId} activeProjectId={projectId} isCompactViewport={false} onNavigate={() => {}} searchQuery="" />
     </>;
   }
-  const host = threadActionHost();
-  const slot = renderSlot({ component: Host }, {}, { ...host.options,
-    sidebarThreads: { projects: [sidebarProject(projectId, "Test project", personal)], threads: rows },
+  const slot = renderSlot({ component: Host }, {}, {
+    sidebarThreads: { projects: [{ id: projectId, name: "Test project", isPersonal: personal, href: "/projects/project", settingsHref: "/projects/project/settings" }], threads: rows },
     rpc: { bots_list: () => ({ personalProjectId, bots: personal ? [] : [bot], sections: [], hosts: [], projects: [{ id: "project", name: "Test project" }], warnings: [], threadBindings: personal ? [] : rows.filter((row) => !row.parentThreadId).map((row) => ({ threadId: row.id, botId: bot.id })) }) },
   });
-  host.track(slot);
   await slot.findByText(personal ? "Chats" : "Test bot");
   if (!personal) fireEvent.click(slot.getByRole("button", { name: "Expand conversations for Test bot" }));
   return slot;
@@ -55,7 +54,7 @@ it.each([false, true])("children default closed and form nested, independently c
   fireEvent.click(slot.getByRole("button", { name: "Collapse children of Conversation root" }));
   expect(slot.queryByText("Conversation child")).toBeNull();
   expect(slot.queryByText("Conversation grandchild")).toBeNull();
-  expect(sidebarActionCalls(slot)).toEqual([]);
+  expect(slot.inspection.navigateCalls).toEqual([]);
 });
 
 it.each([false, true])("reveals and highlights the current chat without expanding unrelated branches (personal=%s)", async (personal) => {

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, within } from "@testing-library/react";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { cleanup, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { loadPluginApp } from "@get-bb/plugin-sdk/testing/app";
+import { renderSlot } from "./sidebar-host";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AvatarAppearance } from "../components/avatar-appearance";
 import { BotIcon, Eyes } from "../components/bot-icon";
@@ -13,10 +14,15 @@ import {
   shapePath,
   type BotAvatar,
 } from "../lib/appearance";
-import { bot, personalProjectId, thread, sidebarProject, threadActionHost } from "./fixtures";
+import { bot, personalProjectId, thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
-afterEach(cleanup);
+afterEach(async () => {
+  cleanup();
+  // Radix restores focus on the next task. Let it finish before jsdom's
+  // CustomEvent realm is torn down and the next file creates a fresh one.
+  await new Promise(resolve => setTimeout(resolve, 0));
+});
 
 const base: BotAvatar = { color: "#168b75", shape: "round", expression: "curious", motion: "still" };
 
@@ -25,13 +31,12 @@ function mountPanel(avatar = base, onChange = vi.fn()) {
 }
 
 async function mountSidebar() {
-  const host = threadActionHost();
   const slot = renderSlot(app.threadLists[0]!, {
     activeThreadId: "main", activeProjectId: "project", isCompactViewport: false,
     onNavigate: vi.fn(), searchQuery: "",
-  }, { ...host.options,
+  }, {
     sidebarThreads: {
-      projects: [sidebarProject("project", "Test bot")],
+      projects: [{ id: "project", name: "Test bot", isPersonal: false, href: "/projects/project", settingsHref: "/projects/project/settings" }],
       threads: [thread("main", 1000)],
     },
     rpc: {
@@ -48,7 +53,6 @@ async function mountSidebar() {
       bot_prepare: () => bot,
     },
   });
-  host.track(slot);
   await slot.findByText("Test bot");
   return slot;
 }
@@ -123,12 +127,13 @@ it("does not reroll an existing bot when opening edit or switching tabs", async 
   expect(preview().getAttribute("data-shape")).toBe(bot.avatar.shape);
   expect(preview().getAttribute("data-expression")).toBe(bot.avatar.expression);
   expect(preview().getAttribute("data-motion")).toBe(bot.avatar.motion);
-  fireEvent.click(within(dialog).getByRole("tab", { name: "Appearance" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Customize avatar" }));
   expect(preview().getAttribute("data-expression")).toBe("curious");
-  fireEvent.click(within(dialog).getByRole("button", { name: "Happy" }));
+  fireEvent.click(await slot.findByRole("button", { name: "Happy" }));
   expect(preview().getAttribute("data-expression")).toBe("happy");
-  fireEvent.click(within(dialog).getByRole("tab", { name: "Setup" }));
-  fireEvent.click(within(dialog).getByRole("tab", { name: "Appearance" }));
+  fireEvent.keyDown(slot.getByRole("dialog", { name: "Bot appearance" }), { key: "Escape" });
+  fireEvent.click(within(dialog).getByRole("tab", { name: "Bot" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Customize avatar" }));
   expect(preview().getAttribute("data-expression")).toBe("happy");
   expect(preview().getAttribute("data-shape")).toBe(bot.avatar.shape);
 });
@@ -150,11 +155,33 @@ it("rolls a draft once and keeps it while switching editor tabs", async () => {
   expect(AVATAR_MOTIONS.map((motion) => motion.id)).toContain(first.motion);
   expect(AVATAR_COLORS).toContain(first.fill);
   expect(preview().querySelector("path[mask]")?.getAttribute("fill")).toBe(first.fill);
-  fireEvent.click(within(dialog).getByRole("tab", { name: "Appearance" }));
-  fireEvent.click(within(dialog).getByRole("tab", { name: "Setup" }));
-  fireEvent.click(within(dialog).getByRole("tab", { name: "Instructions" }));
+  fireEvent.click(within(dialog).getByRole("tab", { name: /Projects/ }));
+  fireEvent.click(within(dialog).getByRole("tab", { name: "Bot" }));
+  fireEvent.click(within(dialog).getByRole("tab", { name: "Context" }));
   expect(preview().getAttribute("data-shape")).toBe(first.shape);
   expect(preview().getAttribute("data-expression")).toBe(first.expression);
   expect(preview().getAttribute("data-motion")).toBe(first.motion);
   expect(preview().getAttribute("data-color")).toBe(first.fill);
+});
+
+it("offers one small dice beside the avatar and saves its result only on explicit Save", async () => {
+  const slot = await mountSidebar();
+  fireEvent.contextMenu(slot.getByText("Test bot"));
+  fireEvent.click(await slot.findByRole("menuitem", { name: "Edit bot…" }));
+  const dialog = await slot.findByRole("dialog", { name: "Edit bot" });
+  const dice = within(dialog).getByRole("button", { name: "Randomize appearance" });
+  expect(dice.parentElement?.querySelector('[aria-label="Customize avatar"]')).toBeTruthy();
+  expect(dice.querySelector("svg")?.getAttribute("width")).toBe("14");
+  const random = vi.spyOn(Math, "random").mockReturnValue(0);
+  try { fireEvent.click(dice); } finally { random.mockRestore(); }
+  const preview = within(dialog).getByRole("img", { name: "Bot preview" });
+  const avatar = { color: preview.getAttribute("data-color"), shape: preview.getAttribute("data-shape"), expression: preview.getAttribute("data-expression"), motion: preview.getAttribute("data-motion") };
+  expect(avatar).not.toEqual(bot.avatar);
+  expect(slot.inspection.rpcCalls.some(call => call.method === "bot_update")).toBe(false);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Customize avatar" }));
+  const appearance = await slot.findByRole("dialog", { name: "Bot appearance" });
+  expect(within(appearance).queryByRole("button", { name: "Randomize appearance" })).toBeNull();
+  fireEvent.keyDown(appearance, { key: "Escape" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Save bot" }));
+  await waitFor(() => expect(slot.inspection.rpcCalls).toContainEqual({ method: "bot_update", input: expect.objectContaining({ avatar }) }));
 });

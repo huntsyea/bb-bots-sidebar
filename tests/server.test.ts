@@ -16,6 +16,43 @@ function legacyRecord() {
 }
 
 describe("private bot identities", () => {
+  it("persists launch presets privately and preserves them through older clients and reloads", async () => {
+    const host = await setup();
+    const launchPreset = { execution: { providerId: "test-harness", model: "example", reasoningLevel: "deep", serviceTier: "priority", permissionMode: null }, workspace: "worktree", initialPrompt: "Review the changes." };
+    let bot = await host.harness.behavior.callRpc("bot_create", { name: "Preset bot", role: "Reviewer", hostId: "host-home", avatar, sectionId: null, linkedProjectIds: [], soul: "", launchPreset }) as BotMetadata;
+    expect(bot.launchPreset).toEqual(launchPreset);
+    await host.reload();
+    bot = host.store.require(bot.id);
+    expect(bot.launchPreset).toEqual(launchPreset);
+    const stale = editable(bot);
+    bot = await host.harness.behavior.callRpc("bot_update", { ...editable(bot), name: "Renamed" }) as BotMetadata;
+    expect(bot.launchPreset).toEqual(launchPreset);
+    await expect(host.harness.behavior.callRpc("bot_update", { ...stale, launchPreset: null, memory: "Stale memory" })).rejects.toThrow(/changed while editing/);
+    expect(host.store.require(bot.id).launchPreset).toEqual(launchPreset);
+    expect(host.store.require(bot.id).memory).toBe("");
+    expect(JSON.parse(await readFile(join(host.stateDirectory(bot.id), "bot.json"), "utf8")).launchPreset).toEqual(launchPreset);
+    const cleared = await host.harness.behavior.callRpc("bot_update", { ...editable(bot), launchPreset: null }) as BotMetadata;
+    expect(cleared.launchPreset).toBeNull();
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+  });
+
+  it("never overwrites a submitted execution choice with the bot's saved preset", async () => {
+    const host = await setup(); let bot = await host.create();
+    bot = await host.harness.behavior.callRpc("bot_update", { ...editable(bot), launchPreset: { execution: { providerId: "saved-harness", model: "saved-model", reasoningLevel: "deep", permissionMode: "full" }, workspace: "worktree", initialPrompt: "Saved prompt" } }) as BotMetadata;
+    const chosen = { ...request(PERSONAL_ID), providerId: "chosen-harness", model: "chosen-model", reasoningLevel: "adaptive", serviceTier: "priority", permissionMode: "accept-edits", sessionOptions: { thinking: true } };
+    await host.harness.behavior.callRpc("conversation_create", { botId: bot.id, request: chosen });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({ ...chosen, input: expect.arrayContaining(chosen.input) });
+    expect(host.initialConfigurations[0]?.instructions).toContain("You are Atlas.");
+  });
+
+  it("preserves current composer session options through validation and spawn", async () => {
+    const host = await setup(); const bot = await host.create();
+    const sessionOptions = { mode: "plan", thinking: true };
+    await host.harness.behavior.callRpc("conversation_create", {
+      botId: bot.id, request: { ...request("project"), sessionOptions },
+    });
+    expect(host.harness.inspection.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({ sessionOptions });
+  });
   it.each([
     { type: "existing", hostId: "host-gb300" },
     { type: "new", machineProviderId: "test-machines", inputs: { size: "gpu", options: [true, null, 2] } },
@@ -73,6 +110,7 @@ describe("private bot identities", () => {
     expect(submitted.input.at(-1)).toMatchObject({ type: "text", visibility: "agent-only" });
     const unrelated = await host.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "unrelated" }, project: { id: projectId } }));
     expect(unrelated.instructions).toBeNull(); expect(unrelated.tools).toEqual([]);
+    expect(unrelated.skills).toEqual([]);
     expect(host.harness.inspection.sdk.callsTo("projects.create")).toEqual([]);
   });
 
@@ -84,6 +122,7 @@ describe("private bot identities", () => {
     await host.reload();
     const config = await host.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: created.threadId }, project: { id: PERSONAL_ID } }));
     expect(config.instructions).toContain("You are Atlas.");
+    expect(config.skills).toEqual(["bots-sidebar"]);
     expect(host.store.require(bot.id).mainThreadId).toBe(created.threadId);
   });
 

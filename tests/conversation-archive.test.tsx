@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, within } from "@testing-library/react";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { bot, personalProjectId, thread, sidebarProject, sidebarActionCalls, threadActionHost } from "./fixtures";
+import { loadPluginApp } from "@get-bb/plugin-sdk/testing/app";
+import { renderSlot } from "./sidebar-host";
+import { bot, personalProjectId, thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 afterEach(cleanup);
@@ -12,19 +13,17 @@ async function mount(personal: boolean, offerArchive = true) {
     thread("archived", 500, { isArchived: true }), ...Array.from({ length: 9 }, (_, i) => thread(`recent-${i}`, 100 - i)),
   ].map(row => ({ ...row, projectId: personal ? personalProjectId : "project" }));
   const onNavigate = vi.fn();
-  const host = threadActionHost();
-  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: "root", activeProjectId: rows[0]!.projectId, isCompactViewport: false, onNavigate, searchQuery: "" }, { ...host.options,
+  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: "root", activeProjectId: rows[0]!.projectId, isCompactViewport: false, onNavigate, searchQuery: "" }, {
     ...(offerArchive ? {} : { threadActions: () => [] }),
-    sidebarThreads: { projects: [sidebarProject(rows[0]!.projectId, "Project", personal)], threads: rows },
+    sidebarThreads: { projects: [{ id: rows[0]!.projectId, name: "Project", isPersonal: personal, href: "/projects/project", settingsHref: "/projects/project/settings" }], threads: rows },
     rpc: { bots_list: () => ({ bots: personal ? [] : [bot], personalProjectId, hosts: [], sections: [], projects: [], warnings: [], threadBindings: personal ? [] : rows.filter(row => !row.parentThreadId).map(row => ({ threadId: row.id, botId: bot.id })) }) },
   });
-  host.track(slot);
   if (!personal) fireEvent.click(await slot.findByRole("button", { name: "Expand conversations for Test bot" }));
   await slot.findByText("Conversation root");
   return { slot, onNavigate };
 }
 
-it.each([false, true])("archives the requested parent through BB without navigation or branch toggling (Chats=%s)", async (personal) => {
+it.each([false, true])("requests native archive without prematurely hiding rows before confirmation (Chats=%s)", async (personal) => {
   const { slot, onNavigate } = await mount(personal);
   const link = slot.container.querySelector('[data-sidebar-thread-id="root"]')!;
   const row = link.parentElement!;
@@ -33,8 +32,8 @@ it.each([false, true])("archives the requested parent through BB without navigat
   const disclosure = within(row).getByRole("button", { name: "Expand children of Conversation root" });
   expect(row.lastElementChild).toBe(disclosure); expect(archive.nextElementSibling).toBe(disclosure);
   fireEvent.click(archive, { ctrlKey: true });
-  expect(sidebarActionCalls(slot)).toEqual([{ method: "archive", threadId: "root" }]);
-  expect(slot.container.querySelector('[data-sidebar-thread-id="root"]')).toBeNull();
+  expect(slot.nativeActionCalls).toEqual([{ key: "bb--core/archive", threadId: "root" }]);
+  expect(slot.container.querySelector('[data-sidebar-thread-id="root"]')).not.toBeNull();
   expect(onNavigate).not.toHaveBeenCalled(); expect(slot.inspection.navigateCalls).toEqual([]);
   expect(slot.inspection.rpcCalls.map(call => call.method)).toEqual(["bots_list"]);
 });
@@ -43,9 +42,9 @@ it.each([false, true])("gives each expanded child its own archive action (Chats=
   const { slot } = await mount(personal);
   fireEvent.click(slot.getByRole("button", { name: "Expand children of Conversation root" }));
   fireEvent.click(slot.getByRole("button", { name: "Archive Conversation child" }));
-  expect(sidebarActionCalls(slot)).toEqual([{ method: "archive", threadId: "child" }]);
-  expect(slot.queryByText("Conversation child")).toBeNull();
-  expect(slot.queryByRole("button", { name: /children of Conversation root/ })).toBeNull();
+  expect(slot.nativeActionCalls).toEqual([{ key: "bb--core/archive", threadId: "child" }]);
+  expect(slot.queryByText("Conversation child")).not.toBeNull();
+  expect(slot.queryByRole("button", { name: /children of Conversation root/ })).not.toBeNull();
 });
 
 it.each([false, true])("supports archiving overflow rows without opening a conversation (Chats=%s)", async (personal) => {
@@ -55,7 +54,7 @@ it.each([false, true])("supports archiving overflow rows without opening a conve
   const archive = slot.getByRole("button", { name: "Archive Older conversation" });
   expect(archive.getAttribute("data-archive-thread-id")).toBe("old-leaf");
   fireEvent.keyDown(archive, { key: "Enter" }); fireEvent.click(archive, { detail: 0 });
-  expect(sidebarActionCalls(slot)).toEqual([{ method: "archive", threadId: "old-leaf" }]);
+  expect(slot.nativeActionCalls).toEqual([{ key: "bb--core/archive", threadId: "old-leaf" }]);
   expect(onNavigate).not.toHaveBeenCalled();
 });
 
@@ -65,7 +64,7 @@ it("archives a main child, never the bot identity or main pointer", async () => 
   expect(slot.queryByRole("button", { name: "Archive Conversation archived" })).toBeNull();
   fireEvent.click(slot.getByRole("button", { name: "Expand children of Conversation main" }));
   fireEvent.click(slot.getByRole("button", { name: "Archive Conversation main-child" }));
-  expect(sidebarActionCalls(slot)).toEqual([{ method: "archive", threadId: "main-child" }]);
+  expect(slot.nativeActionCalls).toEqual([{ key: "bb--core/archive", threadId: "main-child" }]);
   expect(slot.inspection.rpcCalls.map(call => call.method)).toEqual(["bots_list"]);
 });
 
@@ -75,7 +74,7 @@ it("disables archive while BB offers no archive action for the conversation", as
   expect(archive.hasAttribute("disabled")).toBe(true);
   fireEvent.click(archive);
   fireEvent.contextMenu(slot.getByText("Conversation root"));
-  expect((await slot.findByRole("menuitem", { name: "Archive conversation" })).hasAttribute("data-disabled")).toBe(true);
-  expect(sidebarActionCalls(slot)).toEqual([]);
+  expect(slot.queryByRole("menuitem", { name: "Archive conversation" })).toBeNull();
+  expect(slot.nativeActionCalls).toEqual([]);
   expect(slot.getByText("Conversation root")).toBeTruthy();
 });

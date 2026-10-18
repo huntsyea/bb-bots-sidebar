@@ -1,23 +1,22 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it } from "vitest";
 import { cleanup, fireEvent, waitFor } from "@testing-library/react";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { bot, personalProjectId, thread, sidebarActionCalls, threadActionHost } from "./fixtures";
+import { loadPluginApp } from "@get-bb/plugin-sdk/testing/app";
+import { renderSlot } from "./sidebar-host";
+import { bot, personalProjectId, thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 afterEach(cleanup);
 
 it("keeps the role and owned projects in the bot subtitle through folding and ownership updates", async () => {
   let owners = [{ botId: bot.id, projectId: "owned" }, { botId: bot.id, projectId: "second" }, { botId: "other", projectId: "member" }];
-  const host = threadActionHost();
-  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: null, activeProjectId: "member", isCompactViewport: false, onNavigate() {}, searchQuery: "" }, { ...host.options,
+  const slot = renderSlot(app.threadLists[0]!, { activeThreadId: null, activeProjectId: "member", isCompactViewport: false, onNavigate() {}, searchQuery: "" }, {
     sidebarThreads: { projects: [], threads: [thread("main", 100, { projectId: "member", title: "Thread title must not replace role" })] },
     rpc: { bots_list: () => ({ bots: [{ ...bot, role: "Project assistant", linkedProjectIds: ["owned", "second", "member"] }], personalProjectId, hosts: [], sections: [], warnings: [],
       projects: [{ id: "owned", name: "Atlas" }, { id: "second", name: "Beacon" }, { id: "member", name: "Member only" }],
       projectOwners: owners, threadBindings: [{ botId: bot.id, threadId: "main" }],
     }) },
   });
-  host.track(slot);
   const row = (await slot.findByText(bot.name)).closest(".project-row")!;
   const subtitle = row.querySelector(".bot-subtitle")!;
   expect(subtitle.textContent).toBe("Project assistant · Atlas, Beacon");
@@ -31,5 +30,5 @@ it("keeps the role and owned projects in the bot subtitle through folding and ow
   owners = [];
   await slot.behavior.emitRealtime("project-bots-changed", {});
   await waitFor(() => expect(subtitle.textContent).toBe("Project assistant"));
-  expect(sidebarActionCalls(slot)).toEqual([]);
+  expect(slot.inspection.navigateCalls).toEqual([]);
 });
