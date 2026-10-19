@@ -60,8 +60,9 @@ under `../docs/agents/warden-reload-protocol.md`. Do not install from the worktr
 ## Reload and rollback safety (BBP-15)
 
 BBP-5 remains on hold until Hunter approves the reload through Warden. The script
-does not stop BB, deploy code, build, or reload the plugin. Run it with Bash and
-SQLite 3 installed. It requires explicit paths and has no live-data default.
+does not stop BB, deploy code, or build. Its backup command briefly disables and
+re-enables only bots-sidebar. Run it with Bash, SQLite 3, Node.js, and the BB CLI
+installed. It requires explicit paths and has no live-data default.
 
 Read-only inspection on 2026-10-18 found the live directory at
 `/Users/huntsyea/.bb/plugins/bots-sidebar`, containing `data.db` and `state/`.
@@ -74,9 +75,11 @@ private bot state. Keep them outside Git checkouts and do not attach them to tas
    Check that no bot approval is pending. Record main's commit and confirm that
    main can fast-forward to `sync/BBP-5`. The prepared rollback commit is
    `df530b00eee5a9917307328d8895d15363520698`.
-2. Pause bot writes. For an exact DB/state pair, stop BB and its plugin host while
-   taking the backup. SQLite `.backup` is consistent during live reads, but the
-   separate `state/` copy is not an atomic snapshot with SQLite. SQLite remains
+2. Confirm bots-sidebar is enabled, no approval is pending, and no external process
+   writes its data. The backup command runs `bb plugin disable bots-sidebar`, takes
+   the SQLite backup and `state/` copy, then runs `bb plugin enable bots-sidebar`.
+   BB and its database writer keep running. SQLite `.backup` is consistent while
+   BB runs; plugin isolation protects the separate state copy. SQLite remains
    authoritative. Create an external backup root, then run from the sync worktree:
 
    ```sh
@@ -88,7 +91,11 @@ private bot state. Keep them outside Git checkouts and do not attach them to tas
    Record the printed timestamped directory. A zero exit status confirms the
    SQLite backup, state copy, and database integrity check. The backup database
    uses DELETE journal mode so it needs no WAL sidecars. The source is opened
-   read-only. Failed backup directories remain for inspection; do not use them.
+   read-only. Cleanup attempts to re-enable the plugin on errors and INT/TERM.
+   If re-enable fails, the command fails and prints the manual recovery command.
+   SIGKILL or host failure cannot run cleanup; check plugin status after interruption.
+   An already-disabled plugin is rejected without changing its status. Failed
+   backup directories remain for inspection; do not use them.
 3. After approval, fast-forward main, run typecheck/tests, build there, and reload
    under Warden's protocol. Keep the installed source on main. Check running status,
    plugin logs, bot list, private state, and conversation creation. Do not save
@@ -96,12 +103,15 @@ private bot state. Keep them outside Git checkouts and do not attach them to tas
 
 ### Roll back after a failed reload
 
-Stop BB and its plugin host before changing data. Keep writers stopped until the
-old code and compatible data are both in place. First take another backup of the
-failed version's data. Keep the safety script accessible from the sync worktree.
+First take another backup of the failed version's data with the command above.
+Then run `bb plugin disable bots-sidebar` before changing data. Keep only this
+plugin disabled until the old code and compatible data are both in place. BB and
+its database writer must keep running. Keep the safety script accessible from
+the sync worktree. If the plugin cannot enable for backup, resolve that failure
+before proceeding; do not bypass backup isolation.
 Choose one data recovery method before reverting the code:
 
-- **Keep current bot edits:** run the command below against the stopped plugin's
+- **Keep current bot edits:** run the command below against the disabled plugin's
   database. It removes only top-level `launchPreset` keys, including JSON null,
   in one transaction. It prints the changed-row count; a repeat prints zero.
   Other fields and tables remain intact. This deliberately discards saved launch
@@ -112,18 +122,19 @@ Choose one data recovery method before reverting the code:
     "$HOME/.bb/plugins/bots-sidebar/data.db"
   ```
 
-- **Restore pre-update state:** with BB stopped, preserve the entire current data
-  directory in a separate recovery folder. Use SQLite `.restore` to restore the
+- **Restore pre-update state:** with bots-sidebar disabled, preserve the entire
+  current data directory in a separate recovery folder. Use SQLite `.restore` to restore the
   chosen backup's `data.db` into the target database, then replace `state/` with
   the matching backup copy. Do not copy a database over active WAL sidecars or
   combine a database and state directory from different backups. This discards
   bot changes made since the backup. Verify `PRAGMA integrity_check` returns `ok`.
 
-Then restore the recorded code revision in main, rebuild, start BB, and reload
-bots-sidebar. Verify the bot list, state, logs, and running status. Report the
-rollback result to Warden. A code-only rollback is unsafe: main's strict decoder
-rejects `launchPreset`. Private files are exports; after the strip, the restored
-code regenerates them from SQLite when state is prepared.
+Then restore the recorded code revision in main, rebuild, then run
+`bb plugin enable bots-sidebar`. Verify the bot list, state, logs, and running
+status. Report the rollback result to Warden. A code-only rollback to `df530b0`
+or earlier is unsafe: the old strict metadataSchema rejects any `launchPreset`
+key, including JSON null. Private files are exports; after the strip, the
+restored code regenerates them from SQLite when state is prepared.
 
 Validation used copies only: a read-only live backup contained five bots. Adding
 a preset in a separate copy made main's unchanged `createBotStore().list()` throw;
@@ -131,6 +142,34 @@ stripping it restored exact equality with all five original decoded records.
 The committed script test covers WAL backup, state copying, spaces/apostrophes in
 paths, null/absent presets, repeat runs, unrelated fields/tables, and an unchanged
 source database. No live strip, deployment, or reload was performed.
+
+## Warden corrections — 2026-10-19 (BBP-17)
+
+- Key presence is the compatibility test. Use
+  `json_type(data,'$.launchPreset') IS NOT NULL` for every presence check. JSON
+  null returns the text `null` from `json_type`, so it counts as present. On the
+  read-only live check, Chief had a real preset and Warden had JSON null: two
+  incompatible records for the strict schema in `df530b0`, the predecessor of
+  `03daa73`, and earlier. Strip removes the top-level key for both values.
+- Never suspend the BB server or its database writer for backup or rollback.
+  That freezes every thread. The script disables only bots-sidebar around the
+  DB/state copy and re-enables it afterward, including error cleanup. Do not run
+  concurrent backups, plugin enable operations, or external writes during this
+  interval. Disable/re-enable loads installed plugin output; use backup only in
+  an approved maintenance window. This correction was tested with CLI stubs and
+  temporary databases; the live plugin was not disabled or reloaded.
+
+Read-only preset count (safe while the plugin runs):
+
+```sh
+bash "scripts/reload-safety.sh" count-launch-presets \
+  "$HOME/.bb/plugins/bots-sidebar/data.db"
+```
+
+Tests cover real and null presets separately, source preservation, WAL backup,
+plugin isolation during the copy, and cleanup after copy/database/CLI failures.
+The implementation uses one cleanup function and the existing SQLite tools;
+no runtime code or build output changes are required.
 
 ## Taking an upstream update
 

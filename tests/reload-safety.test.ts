@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -6,11 +6,42 @@ import Database from "better-sqlite3";
 import { expect, it } from "vitest";
 
 const script = resolve("scripts/reload-safety.sh");
-const run = (...args: string[]) => execFileSync("bash", [script, ...args], { encoding: "utf8" }).trim();
+function environment(root: string, failure = "") {
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  // Every backup uses this stub; tests must never disable the installed plugin.
+  writeFileSync(join(bin, "bb"), `#!/bin/bash
+echo "$*" >> "$TEST_ROOT/commands"
+case "$*" in
+  'plugin list --json')
+    if [[ "$TEST_FAILURE" == already-disabled ]]; then
+      echo '{"plugins":[{"id":"bots-sidebar","enabled":false}]}'
+    else
+      echo '{"plugins":[{"id":"bots-sidebar","enabled":true}]}'
+    fi;;
+  'plugin disable bots-sidebar')
+    [[ "$TEST_FAILURE" != disable ]] || exit 1
+    touch "$TEST_ROOT/disabled";;
+  'plugin enable bots-sidebar')
+    [[ "$TEST_FAILURE" != enable ]] || exit 1
+    rm -f "$TEST_ROOT/disabled";;
+  *) exit 99;;
+esac
+`, { mode: 0o700 });
+  writeFileSync(join(bin, "cp"), `#!/bin/bash
+echo copy >> "$TEST_ROOT/commands"
+[[ -f "$TEST_ROOT/disabled" ]] || exit 99
+[[ "$TEST_FAILURE" != copy ]] || exit 1
+exec /bin/cp "$@"
+`, { mode: 0o700 });
+  return { ...process.env, PATH: `${bin}:${process.env.PATH}`, TEST_ROOT: root, TEST_FAILURE: failure };
+}
 
 it("backs up SQLite and state, strips only presets, and can repeat the strip", () => {
   const root = mkdtempSync(join(tmpdir(), "bots reload's-"));
   try {
+    const env = environment(root);
+    const run = (...args: string[]) => execFileSync("bash", [script, ...args], { env, encoding: "utf8" }).trim();
     const source = join(root, "source");
     const backups = join(root, "backups");
     mkdirSync(join(source, "state"), { recursive: true });
@@ -27,9 +58,14 @@ it("backs up SQLite and state, strips only presets, and can repeat the strip", (
       ];
       for (const row of rows) db.prepare("INSERT INTO bots VALUES (?, ?)").run(row.id, JSON.stringify(row));
       const backup = run("backup", source, backups);
+      expect(readFileSync(join(root, "commands"), "utf8")).toBe(
+        "plugin list --json\nplugin disable bots-sidebar\ncopy\nplugin enable bots-sidebar\n",
+      );
+      expect(run("count-launch-presets", join(backup, "data.db"))).toBe("2");
       expect(readFileSync(join(backup, "state", "sentinel.md"), "utf8")).toBe("private state\n");
       expect(run("strip-launch-presets", join(backup, "data.db"))).toBe("2");
       expect(run("strip-launch-presets", join(backup, "data.db"))).toBe("0");
+      expect(run("count-launch-presets", join(backup, "data.db"))).toBe("0");
       const copy = new Database(join(backup, "data.db"), { readonly: true });
       try {
         expect(copy.prepare("SELECT data FROM bots ORDER BY id").all()).toEqual([
@@ -41,6 +77,52 @@ it("backs up SQLite and state, strips only presets, and can repeat the strip", (
         expect(copy.pragma("integrity_check", { simple: true })).toBe("ok");
       } finally { copy.close(); }
       expect(db.prepare("SELECT data FROM bots WHERE id = 'preset'").get()).toEqual({ data: JSON.stringify(rows[0]) });
+      expect(db.prepare("SELECT data FROM bots WHERE id = 'null'").get()).toEqual({ data: JSON.stringify(rows[1]) });
     } finally { db.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it.each(["copy", "disable", "enable", "database", "already-disabled"])("fails safely when %s prevents backup", (failure) => {
+  const root = mkdtempSync(join(tmpdir(), "bots-reload-failure-"));
+  try {
+    const env = environment(root, failure);
+    const source = join(root, "source");
+    const backups = join(root, "backups");
+    mkdirSync(join(source, "state"), { recursive: true });
+    mkdirSync(backups);
+    const db = new Database(join(source, "data.db"));
+    db.exec("CREATE TABLE bots(data TEXT)");
+    db.close();
+    if (failure === "database") writeFileSync(join(source, "data.db"), "invalid database");
+    const result = spawnSync("bash", [script, "backup", source, backups], { env, encoding: "utf8" });
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+    const commands = readFileSync(join(root, "commands"), "utf8");
+    if (failure === "already-disabled") {
+      expect(commands).toBe("plugin list --json\n");
+    } else {
+      expect(commands).toContain("plugin disable bots-sidebar\n");
+      expect(commands).toContain("plugin enable bots-sidebar\n");
+      if (failure === "disable" || failure === "database") expect(commands).not.toContain("copy\n");
+      if (failure === "enable") expect(result.stderr).toContain("Could not re-enable bots-sidebar");
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it.each([null, { providerId: "codex", model: "test" }])("counts and strips a present preset (%j)", (launchPreset) => {
+  const root = mkdtempSync(join(tmpdir(), "bots-preset-"));
+  const database = join(root, "data.db");
+  const db = new Database(database);
+  try {
+    db.exec("CREATE TABLE bots(data TEXT)");
+    db.prepare("INSERT INTO bots VALUES (?)").run(JSON.stringify({ name: "Bot", launchPreset }));
+    const run = (command: string) => execFileSync("bash", [script, command, database], { encoding: "utf8" }).trim();
+    expect(run("count-launch-presets")).toBe("1");
+    expect(run("strip-launch-presets")).toBe("1");
+    expect(run("count-launch-presets")).toBe("0");
+    expect(db.prepare("SELECT data FROM bots").get()).toEqual({ data: '{"name":"Bot"}' });
+  } finally {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
