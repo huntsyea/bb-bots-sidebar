@@ -115,6 +115,10 @@ export default async function plugin(bb: BbPluginApi) {
       return documentView(bot, input.target, await state.read(bot, input.target === "memory" ? "MEMORY.md" : "settings.json"));
     });
   }
+  function validateBotMemory(botId: string, content: string) {
+    if (content.length > MEMORY_MAX_CHARS) bb.log.warn(`Rejected memory write for bot ${botId}: attempted ${content.length} characters`);
+    validateMemory(content);
+  }
   async function applyBotState(botId: string, change: BotStateMutation): Promise<StateResult> {
     if (change.target === "identity") {
       const bot = await serial(botId, () => state.prepare(botId));
@@ -134,7 +138,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (change.target === "memory" && change.action === "overwrite") {
         // Whole-document replacements must never retry against a newer hash.
         const current = await state.read(store.require(botId), "MEMORY.md");
-        validateMemory(change.content);
+        validateBotMemory(botId, change.content);
         if (current.sha256 !== change.expectedSha256) throw new BotStateConflictError('Memory changed. Read it again with bot_read_state({"target":"memory"}), condense the latest content, then overwrite using its sha256.');
         if (change.content === current.content) return { ...documentView(store.require(botId), "memory", current), changed: false };
         const written = await state.update(botId, "MEMORY.md", change.content, change.expectedSha256);
@@ -144,7 +148,7 @@ export default async function plugin(bb: BbPluginApi) {
         const bot = store.require(botId);
         const current = await state.read(bot, file);
         const content = mutateStateDocument(current.content, change);
-        if (change.target === "memory") validateMemory(content);
+        if (change.target === "memory") validateBotMemory(botId, content);
         if (content === current.content) return { ...documentView(bot, change.target, current), changed: false };
         try {
           const written = await state.update(botId, file, content, current.sha256);

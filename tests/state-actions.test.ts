@@ -165,6 +165,22 @@ it("allows exactly 3000 memory characters and rejects overflow with compaction i
   expect(host.store.require(bot.id)).toEqual(before);
 });
 
+it("warns on rejected memory append with bot id and attempted length but no content", async () => {
+  const { bot, host, read, update } = await scope();
+  const content = "Private existing memory. ".padEnd(3000, "x");
+  await update({ target: "memory", action: "overwrite", content, expectedSha256: (await read("memory")).state.sha256 });
+  const warn = vi.spyOn(host.bb.log, "warn");
+  const fact = "Private new fact.";
+  const attempted = mutateStateDocument(content, { target: "memory", action: "append", fact });
+
+  await expect(update({ target: "memory", action: "append", fact })).rejects.toThrow(/3000.*overwrite/);
+
+  expect(warn).toHaveBeenCalledExactlyOnceWith(`Rejected memory write for bot ${bot.id}: attempted ${attempted.length} characters`);
+  const logs = JSON.stringify(host.harness.inspection.logEntries);
+  for (const privateText of ["Private existing memory.", fact]) expect(logs).not.toContain(privateText);
+  expect(host.store.require(bot.id).memory).toBe(content);
+});
+
 it("overwrites only the memory read, supports clearing, and requires a fresh hash", async () => {
   const { read, update } = await scope();
   const old = await read("memory");
