@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
@@ -33,6 +33,30 @@ echo copy >> "$TEST_ROOT/commands"
 [[ -f "$TEST_ROOT/disabled" ]] || exit 99
 [[ "$TEST_FAILURE" != copy ]] || exit 1
 exec /bin/cp "$@"
+`, { mode: 0o700 });
+  writeFileSync(join(bin, "git"), `#!/bin/bash
+[[ "$1" == -C ]] || exit 99
+shift 2
+case "$*" in
+  'rev-parse --show-toplevel') exit 1;;
+  'branch --show-current') echo main;;
+  'status --porcelain') [[ "$TEST_FAILURE" != dirty ]] || echo ' M file';;
+  'merge --ff-only sync/test')
+    echo "$*" >> "$TEST_ROOT/commands"
+    [[ -f "$TEST_ROOT/disabled" ]] || exit 99
+    [[ "$TEST_FAILURE" != merge ]] || exit 1
+    touch "$TEST_ROOT/merged";;
+  *) exit 99;;
+esac
+`, { mode: 0o700 });
+  writeFileSync(join(bin, "npm"), `#!/bin/bash
+echo "npm $*" >> "$TEST_ROOT/commands"
+[[ -f "$TEST_ROOT/disabled" && -f "$TEST_ROOT/merged" ]] || exit 99
+case "$*" in
+  ci) [[ "$TEST_FAILURE" != ci ]] || exit 1;;
+  'run build') [[ "$TEST_FAILURE" != build ]] || exit 1;;
+  *) exit 99;;
+esac
 `, { mode: 0o700 });
   return { ...process.env, PATH: `${bin}:${process.env.PATH}`, TEST_ROOT: root, TEST_FAILURE: failure };
 }
@@ -81,6 +105,44 @@ it("backs up SQLite and state, strips only presets, and can repeat the strip", (
     } finally { db.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+it.each(["", "copy", "database", "merge", "ci", "build", "enable", "disable", "already-disabled", "dirty"])(
+  "keeps one outage through reload and handles failure at %s", (failure) => {
+    const root = mkdtempSync(join(tmpdir(), "bots reload's-"));
+    try {
+      const env = environment(root, failure);
+      const source = join(root, "source");
+      const backups = join(root, "backups");
+      mkdirSync(join(source, "state"), { recursive: true });
+      mkdirSync(backups);
+      writeFileSync(join(source, "state", "sentinel.md"), "private state\n");
+      const db = new Database(join(source, "data.db"));
+      db.exec("CREATE TABLE bots(data TEXT)");
+      db.close();
+      if (failure === "database") writeFileSync(join(source, "data.db"), "invalid database");
+      const result = spawnSync("bash", [script, "reload", "sync/test", source, backups], { env, encoding: "utf8" });
+      expect(result.status).toBe(failure ? 1 : 0);
+      const commands = existsSync(join(root, "commands")) ? readFileSync(join(root, "commands"), "utf8") : "";
+      const steps = [
+        "plugin list --json", "plugin disable bots-sidebar", "copy",
+        "merge --ff-only sync/test", "npm ci", "npm run build", "plugin enable bots-sidebar",
+      ];
+      const stop = { copy: 2, database: 1, merge: 3, ci: 4, build: 5, enable: 6, disable: 1 }[failure];
+      const expected = failure === "dirty" ? [] : failure === "already-disabled" ? steps.slice(0, 1)
+        : stop === undefined ? steps : [...steps.slice(0, stop + 1), "plugin enable bots-sidebar"];
+      expect(commands).toBe(expected.length ? expected.join("\n") + "\n" : "");
+      expect(existsSync(join(root, "merged"))).toBe(["", "ci", "build", "enable"].includes(failure));
+      expect(existsSync(join(root, "disabled"))).toBe(failure === "enable");
+      if (!failure) {
+        const backup = result.stdout.trim();
+        expect(readFileSync(join(backup, "state", "sentinel.md"), "utf8")).toBe("private state\n");
+        expect(execFileSync("sqlite3", [join(backup, "data.db"), "PRAGMA integrity_check;"], { encoding: "utf8" }).trim()).toBe("ok");
+      }
+      if (["merge", "ci", "build", "enable"].includes(failure)) expect(result.stderr).toContain("Backup: ");
+      if (failure === "enable") expect(result.stderr).toContain("Could not re-enable bots-sidebar");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  },
+);
 
 it.each(["copy", "disable", "enable", "database", "already-disabled"])("fails safely when %s prevents backup", (failure) => {
   const root = mkdtempSync(join(tmpdir(), "bots-reload-failure-"));

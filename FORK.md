@@ -54,15 +54,18 @@ ID `bots-sidebar`.
 
 The installed main checkout and its output remain untouched during preparation.
 After Hunter approves, Warden must verify that no bot approval is pending,
-fast-forward main to this branch, build in main, then reload bots-sidebar last
+use the single-outage reload below for bots-sidebar last
 under `../docs/agents/warden-reload-protocol.md`. Do not install from the worktree.
 
 ## Reload and rollback safety (BBP-15)
 
 BBP-5 remains on hold until Hunter approves the reload through Warden. The script
-does not stop BB, deploy code, or build. Its backup command briefly disables and
-re-enables only bots-sidebar. Run it with Bash, SQLite 3, Node.js, and the BB CLI
-installed. It requires explicit paths and has no live-data default.
+never stops BB or its database writer. Its reload command disables only
+bots-sidebar, backs up data, fast-forwards main, installs dependencies, builds,
+and enables the plugin once to load the new output. Its separate backup command
+disables and re-enables only bots-sidebar without changing code. Run it with
+Bash, SQLite 3, Git, Node.js, and the BB CLI installed; reload also requires npm.
+It requires explicit paths and has no live-data default.
 
 Read-only inspection on 2026-10-18 found the live directory at
 `/Users/huntsyea/.bb/plugins/bots-sidebar`, containing `data.db` and `state/`.
@@ -75,35 +78,59 @@ private bot state. Keep them outside Git checkouts and do not attach them to tas
    Check that no bot approval is pending. Record main's commit and confirm that
    main can fast-forward to `sync/BBP-5`. The prepared rollback commit is
    `df530b00eee5a9917307328d8895d15363520698`.
-2. Confirm bots-sidebar is enabled, no approval is pending, and no external process
-   writes its data. The backup command runs `bb plugin disable bots-sidebar`, takes
-   the SQLite backup and `state/` copy, then runs `bb plugin enable bots-sidebar`.
-   BB and its database writer keep running. SQLite `.backup` is consistent while
-   BB runs; plugin isolation protects the separate state copy. SQLite remains
-   authoritative. Create an external backup root, then run from the sync worktree:
+2. Validate the target ref with typecheck and the full test suite in an isolated
+   worktree before the maintenance window. Confirm that the installed source is
+   this main checkout, main is clean, bots-sidebar is enabled, no approval is
+   pending, and no external process writes its data. Do not run concurrent
+   backups, merges, builds, or plugin enable operations. Create an external backup
+   root, then run from the installed main checkout after approval:
 
    ```sh
    mkdir -p "$HOME/.bb/backups/bots-sidebar"
-   bash "scripts/reload-safety.sh" backup \
+   bash "scripts/reload-safety.sh" reload "sync/BBP-5" \
      "$HOME/.bb/plugins/bots-sidebar" "$HOME/.bb/backups/bots-sidebar"
    ```
 
-   Record the printed timestamped directory. A zero exit status confirms the
-   SQLite backup, state copy, and database integrity check. The backup database
-   uses DELETE journal mode so it needs no WAL sidecars. The source is opened
-   read-only. Cleanup attempts to re-enable the plugin on errors and INT/TERM.
-   If re-enable fails, the command fails and prints the manual recovery command.
-   SIGKILL or host failure cannot run cleanup; check plugin status after interruption.
-   An already-disabled plugin is rejected without changing its status. Failed
-   backup directories remain for inspection; do not use them.
-3. After approval, fast-forward main, run typecheck/tests, build there, and reload
-   under Warden's protocol. Keep the installed source on main. Check running status,
-   plugin logs, bot list, private state, and conversation creation. Do not save
-   launch presets until the update is stable. Report results to Warden.
+   The command runs this sequence in one outage:
+   `bb plugin disable bots-sidebar` → SQLite backup and `state/` copy →
+   backup integrity check → `git merge --ff-only <ref>` → `npm ci` →
+   `npm run build` → `bb plugin enable bots-sidebar`.
+   Enable loads the new code; do not run a second reload. BB and its database
+   writer keep running. SQLite is authoritative; plugin isolation protects the
+   separate state copy.
+
+   Record the timestamped backup path printed before merge. The source database
+   is opened read-only. The backup uses DELETE journal mode and needs no WAL
+   sidecars. A zero exit status confirms the complete sequence, but does not
+   replace the runtime checks below.
+3. Verify main is at the intended ref. Check running status with `bb plugin list`,
+   plugin logs, the bot list, private state, and conversation creation. Do not
+   save launch presets until the update is stable. Report results to Warden.
+
+If backup or merge fails, main stays at its original revision. If install, build,
+or enable fails after a successful merge, main stays at the target revision;
+dependencies or build output can be incomplete. There is no automatic code or
+data rollback. The EXIT trap attempts to enable the plugin on every failure
+after isolation starts, including INT/TERM. This can load old or incomplete
+output after a failed build: check plugin status and logs, then repair or use
+the rollback procedure below. If enable fails, the script exits with an error
+and prints the manual recovery command. SIGKILL or host failure cannot run the
+trap. An already-disabled plugin is rejected without changing its status.
+Failed backup directories remain for inspection; do not use them.
+
+For an approved backup without a deployment, use `backup DATA_DIR BACKUP_ROOT`.
+It uses the same backup and cleanup logic and enables the plugin after the
+integrity check. This command also causes a plugin outage.
 
 ### Roll back after a failed reload
 
-First take another backup of the failed version's data with the command above.
+First take another backup of the failed version's data:
+
+```sh
+bash "scripts/reload-safety.sh" backup \
+  "$HOME/.bb/plugins/bots-sidebar" "$HOME/.bb/backups/bots-sidebar"
+```
+
 Then run `bb plugin disable bots-sidebar` before changing data. Keep only this
 plugin disabled until the old code and compatible data are both in place. BB and
 its database writer must keep running. Keep the safety script accessible from
@@ -113,7 +140,8 @@ Choose one data recovery method before reverting the code:
 
 - **Keep current bot edits:** run the command below against the disabled plugin's
   database. It removes only top-level `launchPreset` keys, including JSON null,
-  in one transaction. It prints the changed-row count; a repeat prints zero.
+  in one transaction using `json_type(data,'$.launchPreset') IS NOT NULL`.
+  It prints the changed-row count; a repeat prints zero.
   Other fields and tables remain intact. This deliberately discards saved launch
   defaults. It does not remove unrelated incompatible fields from future updates.
 
@@ -129,7 +157,8 @@ Choose one data recovery method before reverting the code:
   combine a database and state directory from different backups. This discards
   bot changes made since the backup. Verify `PRAGMA integrity_check` returns `ok`.
 
-Then restore the recorded code revision in main, rebuild, then run
+Only after the strip or restore, restore the recorded code revision in main,
+run `npm ci` and `npm run build`, then run
 `bb plugin enable bots-sidebar`. Verify the bot list, state, logs, and running
 status. Report the rollback result to Warden. A code-only rollback to `df530b0`
 or earlier is unsafe: the old strict metadataSchema rejects any `launchPreset`
