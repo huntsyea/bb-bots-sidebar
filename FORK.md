@@ -7,6 +7,14 @@ The `upstream` remote is fetch-only (push is disabled).
 - **Base:** upstream `v1.0.0`
 - **Installed in BB from:** this directory (`bb plugin install <path>`)
 
+## Current requirements — 2026-10-20
+
+`package.json` requires BB `>=0.46.1` and Plugin SDK `>=0.6.49`.
+The README now gives these same minimum versions; its former BB 0.42
+requirement is obsolete. Its Git install example selects upstream. This fork
+is installed from `/Users/huntsyea/Dev/bb-plugins/bb-bots-sidebar`.
+The BBP-5 merge is now in `main`. The preparation results below are historical.
+
 ## Our changes
 
 | Change | Main files |
@@ -59,7 +67,7 @@ under `../docs/agents/warden-reload-protocol.md`. Do not install from the worktr
 
 ## Reload and rollback safety (BBP-15)
 
-BBP-5 remains on hold until Hunter approves the reload through Warden. The script
+Each future reload requires Hunter's approval through Warden. The script
 never stops BB or its database writer. Its reload command disables only
 bots-sidebar, backs up data, fast-forwards main, installs dependencies, builds,
 and enables the plugin once to load the new output. Its separate backup command
@@ -76,8 +84,9 @@ private bot state. Keep them outside Git checkouts and do not attach them to tas
 
 1. Follow Warden's reload order: model-profiles, cursor-sidebar, then bots-sidebar.
    Check that no bot approval is pending. Record main's commit and confirm that
-   main can fast-forward to `sync/BBP-5`. The prepared rollback commit is
-   `df530b00eee5a9917307328d8895d15363520698`.
+   main can fast-forward to the reviewed `sync/<KEY>` branch. Record a fresh
+   rollback commit; `df530b00eee5a9917307328d8895d15363520698` is the historical
+   BBP-5 rollback point.
 2. Validate the target ref with typecheck and the full test suite in an isolated
    worktree before the maintenance window. Confirm that the installed source is
    this main checkout, main is clean, bots-sidebar is enabled, no approval is
@@ -87,7 +96,7 @@ private bot state. Keep them outside Git checkouts and do not attach them to tas
 
    ```sh
    mkdir -p "$HOME/.bb/backups/bots-sidebar"
-   bash "scripts/reload-safety.sh" reload "sync/BBP-5" \
+   bash "scripts/reload-safety.sh" reload "sync/<KEY>" \
      "$HOME/.bb/plugins/bots-sidebar" "$HOME/.bb/backups/bots-sidebar"
    ```
 
@@ -203,10 +212,14 @@ no runtime code or build output changes are required.
 ## Taking an upstream update
 
 ```sh
-../sync-forks.sh                 # what upstream has that we don't
-git merge vX.Y.Z                 # upstream releases are tags
-# resolve conflicts, keeping both upstream's change and ours above
-npx tsc --noEmit && npm test
-git push                         # to origin (our fork)
-# Follow the approved reload and rollback procedure above before deployment.
+bash "/Users/huntsyea/Dev/bb-plugins/sync-forks.sh"
 ```
+
+The root [sync-forks.sh](/Users/huntsyea/Dev/bb-plugins/sync-forks.sh)
+fetches and reports upstream changes; it does not merge or deploy.
+Prepare the selected upstream release in an isolated `sync/<KEY>` worktree.
+Preserve the fork changes above, record the rollback commit, and validate the
+candidate there. Report conflicts, results, and engine/SDK compatibility to Warden.
+Follow the [Warden reload protocol](/Users/huntsyea/Dev/bb-plugins/docs/agents/warden-reload-protocol.md)
+for approval, fast-forward, deployment order, and runtime checks. Use the
+single-outage procedure above for an approved bots-sidebar deployment.
