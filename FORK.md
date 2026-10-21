@@ -41,7 +41,7 @@ service. SDK fixtures use upstream's native-action test host; Node 26 webstorage
 protection and our test setup remain enabled.
 
 Typecheck and build pass. Tests: 434 pass, 38 fail (472 total), compared with
-416 pass, 37 fail in `../docs/agents/test-baseline-2026-10-18.md`. All 37 baseline
+416 pass, 37 fail in the `test-baseline-2026-10-18.md` attachment on BBP-7. All 37 baseline
 failure names remain. The only added failure is:
 
 - `tests/server.test.ts > private bot identities > persists launch presets privately and preserves them through older clients and reloads`
@@ -63,7 +63,7 @@ ID `bots-sidebar`.
 The installed main checkout and its output remain untouched during preparation.
 After Hunter approves, Warden must verify that no bot approval is pending,
 use the single-outage reload below for bots-sidebar last
-under `../docs/agents/warden-reload-protocol.md`. Do not install from the worktree.
+under [ADR-0001](/Users/huntsyea/Dev/bb-plugins/docs/adr/0001-warden-reload-approval.md). Do not install from the worktree.
 
 ## Reload and rollback safety (BBP-15)
 
@@ -220,6 +220,6 @@ fetches and reports upstream changes; it does not merge or deploy.
 Prepare the selected upstream release in an isolated `sync/<KEY>` worktree.
 Preserve the fork changes above, record the rollback commit, and validate the
 candidate there. Report conflicts, results, and engine/SDK compatibility to Warden.
-Follow the [Warden reload protocol](/Users/huntsyea/Dev/bb-plugins/docs/agents/warden-reload-protocol.md)
+Follow the [Warden reload protocol (ADR-0001)](/Users/huntsyea/Dev/bb-plugins/docs/adr/0001-warden-reload-approval.md)
 for approval, fast-forward, deployment order, and runtime checks. Use the
 single-outage procedure above for an approved bots-sidebar deployment.
