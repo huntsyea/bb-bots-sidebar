@@ -9,6 +9,7 @@
   "scripts": {
     "test": "NODE_OPTIONS=--no-experimental-webstorage vitest run",
     "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test && bb plugin types --check",
     "build": "bb plugin build"
   },
   "engines": {
