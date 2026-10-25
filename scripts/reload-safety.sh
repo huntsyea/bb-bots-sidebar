@@ -45,9 +45,15 @@ case "$1" in
       });
     ' || fail "bots-sidebar must be enabled before backup"
     destination=$(mktemp -d "$backup_root/bots-sidebar-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
+    backup_complete=false
     resume_plugin() {
       local status=$?
       trap - EXIT
+      # Never leave a partial backup that could be mistaken for a recovery point.
+      if [[ $backup_complete != true ]]; then
+        rm -rf -- "$destination"
+        printf '%s\n' "Backup failed; removed incomplete $destination. Nothing was merged." >&2
+      fi
       if ! bb plugin enable bots-sidebar >&2; then
         printf '%s\n' "Could not re-enable bots-sidebar; run: bb plugin enable bots-sidebar" >&2
         status=1
@@ -60,12 +66,16 @@ case "$1" in
     trap 'exit 130' INT
     trap 'exit 143' TERM
     bb plugin disable bots-sidebar >&2
+    # Open the source read-write: closing the plugin's last connection deletes
+    # data.db-wal and data.db-shm, and SQLite cannot open a WAL database without
+    # them in read-only mode. The plugin is disabled, so nothing else writes.
     # A fixed relative backup name avoids SQLite shell path quoting rules.
-    (cd "$destination" && sqlite3 -readonly "$source_dir/data.db" ".timeout 5000" '.backup data.db')
-    cp -R "$source_dir/state" "$destination/state"
-    # Make the backup standalone even when the source uses WAL sidecars.
-    sqlite3 "$destination/data.db" 'PRAGMA journal_mode=DELETE;' >/dev/null
-    [[ $(sqlite3 -readonly "$destination/data.db" 'PRAGMA integrity_check;') == ok ]] || fail "Backup integrity check failed: $destination"
+    (cd "$destination" && sqlite3 "$source_dir/data.db" ".timeout 5000" '.backup data.db') || fail "SQLite backup of $source_dir/data.db failed"
+    # The copy inherits WAL mode; make it standalone before any read-only open.
+    [[ $(sqlite3 "$destination/data.db" 'PRAGMA journal_mode=DELETE;') == delete ]] || fail "Could not set journal_mode=DELETE on the backup"
+    [[ $(sqlite3 -readonly "$destination/data.db" 'PRAGMA integrity_check;') == ok ]] || fail "Backup integrity check failed"
+    cp -R "$source_dir/state" "$destination/state" || fail "Copying state/ failed"
+    backup_complete=true
     if [[ $operation == reload ]]; then
       printf 'Backup: %s\n' "$destination" >&2
       git -C "$repo" merge --ff-only "$ref" >&2

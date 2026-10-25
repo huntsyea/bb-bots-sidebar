@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { expect, it } from "vitest";
 
@@ -106,7 +106,37 @@ it("backs up SQLite and state, strips only presets, and can repeat the strip", (
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-it.each(["", "copy", "database", "merge", "ci", "build", "enable", "disable", "already-disabled", "dirty"])(
+it("backs up a WAL database whose sidecars were removed when the plugin closed it", () => {
+  const root = mkdtempSync(join(tmpdir(), "bots-reload-wal-"));
+  try {
+    const env = environment(root);
+    const source = join(root, "source");
+    const backups = join(root, "backups");
+    mkdirSync(join(source, "state"), { recursive: true });
+    mkdirSync(backups);
+    const database = join(source, "data.db");
+    const db = new Database(database);
+    db.pragma("journal_mode = WAL");
+    db.exec("CREATE TABLE bots(data TEXT)");
+    db.prepare("INSERT INTO bots VALUES (?)").run(JSON.stringify({ name: "Bot", launchPreset: { model: "test" } }));
+    // Closing the last connection checkpoints and deletes -wal/-shm, as disabling the plugin does.
+    db.close();
+    expect(readFileSync(database)[18]).toBe(2);
+    expect(existsSync(`${database}-wal`) || existsSync(`${database}-shm`)).toBe(false);
+    const result = spawnSync("bash", [script, "backup", source, backups], { env, encoding: "utf8" });
+    expect(result.stderr).not.toContain("unable to open database file");
+    expect(result.status).toBe(0);
+    const backup = result.stdout.trim();
+    expect(readdirSync(backups)).toEqual([basename(backup)]);
+    const sqlite = (path: string, sql: string) => execFileSync("sqlite3", [path, sql], { encoding: "utf8" }).trim();
+    expect(sqlite(join(backup, "data.db"), "PRAGMA journal_mode;")).toBe("delete");
+    expect(sqlite(join(backup, "data.db"), "PRAGMA integrity_check;")).toBe("ok");
+    expect(execFileSync("bash", [script, "count-launch-presets", join(backup, "data.db")], { encoding: "utf8" }).trim()).toBe("1");
+    expect(sqlite(database, "PRAGMA journal_mode;")).toBe("wal");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it.each(["", "copy", "database", "merge","ci", "build", "enable", "disable", "already-disabled", "dirty"])(
   "keeps one outage through reload and handles failure at %s", (failure) => {
     const root = mkdtempSync(join(tmpdir(), "bots reload's-"));
     try {
@@ -133,6 +163,9 @@ it.each(["", "copy", "database", "merge", "ci", "build", "enable", "disable", "a
       expect(commands).toBe(expected.length ? expected.join("\n") + "\n" : "");
       expect(existsSync(join(root, "merged"))).toBe(["", "ci", "build", "enable"].includes(failure));
       expect(existsSync(join(root, "disabled"))).toBe(failure === "enable");
+      // A failed backup is removed; a completed one is kept even if a later step fails.
+      expect(readdirSync(backups)).toHaveLength(["", "merge", "ci", "build", "enable"].includes(failure) ? 1 : 0);
+      if (["copy", "database", "disable"].includes(failure)) expect(result.stderr).toContain("Backup failed; removed incomplete");
       if (!failure) {
         const backup = result.stdout.trim();
         expect(readFileSync(join(backup, "state", "sentinel.md"), "utf8")).toBe("private state\n");
@@ -159,6 +192,8 @@ it.each(["copy", "disable", "enable", "database", "already-disabled"])("fails sa
     const result = spawnSync("bash", [script, "backup", source, backups], { env, encoding: "utf8" });
     expect(result.status).not.toBe(0);
     expect(result.stdout).toBe("");
+    // Only the final enable runs after a completed backup, which is kept.
+    expect(readdirSync(backups)).toHaveLength(failure === "enable" ? 1 : 0);
     const commands = readFileSync(join(root, "commands"), "utf8");
     if (failure === "already-disabled") {
       expect(commands).toBe("plugin list --json\n");
