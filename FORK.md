@@ -9,7 +9,7 @@ The `upstream` remote is fetch-only (push is disabled).
 
 ## Current requirements — 2026-10-20
 
-`package.json` requires BB `>=0.46.1` and Plugin SDK `>=0.6.49`.
+`package.json` requires BB `>=0.46.1` and Plugin SDK `>=0.6.79` (BBP-34; BB 0.47.1 ships SDK 0.6.79).
 The README now gives these same minimum versions; its former BB 0.42
 requirement is obsolete. Its Git install example selects upstream. This fork
 is installed from `/Users/huntsyea/Dev/bb-plugins/bb-bots-sidebar`.
@@ -21,7 +21,7 @@ The BBP-5 merge is now in `main`. The preparation results below are historical.
 |---|---|
 | Threads / Bots tabs above the sidebar list. They pin BB's `sidebar.threadListProvider`. Threads follows the list chosen in Settings → Appearance. | `components/sidebar-mode-tabs.tsx`, `lib/sidebar-mode.ts`, `sidebar_mode_*` in `server.ts` and `contract.ts` |
 | The Bots list shows only bots. The unassigned Chats pane is opt-in ("Show unassigned chats" in the + menu). | `app.tsx` (`SHOW_CHATS_KEY`) |
-| Plugin SDK 0.6.49 (needs BB ≥ 0.46.1). Row actions use BB's native context menu and archive action; navigation uses the public SDK. | `app.tsx`, `components/conversation-archive-button.tsx`, tests |
+| Plugin SDK 0.6.79 (BBP-34; earlier 0.6.49 needed BB ≥ 0.46.1). Row actions use BB's native context menu and archive action; navigation uses the public SDK. | `app.tsx`, `components/conversation-archive-button.tsx`, tests |
 | `bb bots` manages bots: `show`, `create`, `update`, `projects join/leave/own/release`, `sections list/create/rename/delete`, `chat`, plus the existing `list` and `message`. Built with `defineCli`. | `lib/bots-cli.ts` |
 | Bot writes (create, update, project roles, sections, visibility, starting conversations) live in one service shared by the sidebar RPCs, the CLI and the bots' own tools. | `lib/bot-service.ts`, `server.ts` |
 | "Agents may create bots" setting (Off / Ask / Allow, default Ask) gates `create` and `update` from a BB thread; Ask shows an approval form in that thread. | `bb.settings.define` in `server.ts`, `authorize` in `lib/bots-cli.ts`, `components/bot-change-approval.tsx`, `lib/bot-change-approval.ts` |

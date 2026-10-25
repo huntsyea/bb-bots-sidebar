@@ -1,6 +1,6 @@
 # Bots Sidebar
 
-Requires BB 0.46.1 or newer (Plugin SDK 0.6.49). Conversation menus and archive
+Requires BB 0.46.1 or newer with Plugin SDK 0.6.79 or newer (BB 0.47.1 ships 0.6.79). Conversation menus and archive
 buttons use BB's native thread actions, including confirmation, Undo, and actions
 from other plugins. Rows follow native titles, links, draft indicators, plugin
 statuses, and keyboard shortcuts. Provider session options from the native new
