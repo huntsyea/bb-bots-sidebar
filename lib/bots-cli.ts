@@ -333,7 +333,7 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner 
           const message = positionals.message.trim();
           if (!message || message.length > MESSAGE_MAX_CHARS) throw new PluginCliError(`Message must contain 1-${MESSAGE_MAX_CHARS} characters`, { code: "invalid_message" });
           const bot = botFor(positionals.bot);
-          const threadId = options.thread ?? (await listBotConversations(bb, bot, resolveOwner)).roots[0]?.id;
+          const threadId = options.thread ?? (await listBotConversations(bb, bot, store.owner, resolveOwner)).roots[0]?.id;
           if (!threadId) throw new PluginCliError("This bot has no visible conversation. Start one with bb bots chat, or choose a bound conversation with --thread.", { code: "no_conversation" });
           if (ctx.threadId === threadId) throw new PluginCliError("Cannot message the current conversation. Choose another bot or conversation.", { code: "self_message" });
           ctx.signal?.throwIfAborted();
