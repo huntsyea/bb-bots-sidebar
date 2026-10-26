@@ -19,6 +19,10 @@ The runtime plugin ID is `bots-sidebar`; its CLI is `bb bots`.
 - Bot identity, memory, and settings belong to private plugin storage. Use
   `bot_read_state` and `bot_update_state` in a bound conversation. Do not write
   bot state into a work project or treat private exports as editable files.
+- Delete a bot only when the user asks: `bb bots delete '<bot>' --dry-run`
+  first, then without it. An agent's delete always shows the user an approval
+  form. It refuses while the bot owns a project or has a pending approval; an
+  export is saved first and its conversations stay as ordinary threads.
 - A project has at most one owner and may have many bot members. Ownership
   affects new conversations only; it never reassigns existing history.
 - In the sidebar, a bot opens its first manually ordered conversation; its

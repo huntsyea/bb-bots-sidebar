@@ -25,6 +25,7 @@ export function BotChangeApprovalForm({ interaction, submit, cancel }: PluginPen
     setPending(approved ? "approve" : "decline");
     submit({ approved }).catch(() => setPending(null));
   };
+  if (change.kind === "delete") return <DeleteApproval change={change} pending={pending} answer={answer} cancel={cancel} title={interaction.title} />;
   const previous = change.previous;
   const renamed = previous && previous.name !== change.name;
   const roleChanged = previous && previous.role !== change.role;
@@ -48,6 +49,30 @@ export function BotChangeApprovalForm({ interaction, submit, cancel }: PluginPen
         <Button type="button" size="sm" disabled={pending !== null} onClick={() => answer(true)}>{pending === "approve" ? "Approving…" : change.kind === "create" ? "Create bot" : "Save changes"}</Button>
       </footer>
       {/* Escape hatch the host also offers; kept explicit for keyboard users. */}
+      <button type="button" className="sr-only" onClick={() => void cancel()}>Dismiss without answering</button>
+    </section>
+  );
+}
+
+function DeleteApproval({ change, pending, answer, cancel, title }: { change: BotChangeApproval; pending: "approve" | "decline" | null; answer: (approved: boolean) => void; cancel: () => Promise<void>; title: string }) {
+  const removal = change.removal!;
+  const requester = change.requestedBy?.botName ? `bot ${change.requestedBy.botName}` : "an agent in this thread";
+  return (
+    <section className="bot-change-approval flex flex-col gap-3 p-3" aria-label={title}>
+      <p className="text-xs text-muted-foreground">Requested by {requester} via <code>bb bots delete</code>. An export is saved first; the bot's identity, instructions, memory and settings then go.</p>
+      <dl className="flex flex-col gap-1.5">
+        <Field label="Name"><strong>{change.name}</strong></Field>
+        <Field label="Role">{change.role || "—"}</Field>
+        <Field label="Memory">{removal.memoryCharacters} characters</Field>
+        <Field label="Settings">{removal.settingsKeys.join(", ") || "None"}</Field>
+        <Field label="Projects">{change.projects.length ? change.projects.map((project) => project.name).join(", ") : "None"}</Field>
+        <Field label="Conversations">{removal.conversationCount}, kept as ordinary threads</Field>
+        <Field label="Instructions"><Instructions text={change.soul} /></Field>
+      </dl>
+      <footer className="flex justify-end gap-2">
+        <Button type="button" variant="ghost" size="sm" disabled={pending !== null} onClick={() => answer(false)}>{pending === "decline" ? "Declining…" : "Decline"}</Button>
+        <Button type="button" variant="destructive" size="sm" disabled={pending !== null} onClick={() => answer(true)}>{pending === "approve" ? "Deleting…" : "Delete bot"}</Button>
+      </footer>
       <button type="button" className="sr-only" onClick={() => void cancel()}>Dismiss without answering</button>
     </section>
   );

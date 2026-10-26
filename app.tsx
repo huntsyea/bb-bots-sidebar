@@ -45,6 +45,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { ResizableChats } from "@/components/resizable-chats";
 import { SidebarModeTabs } from "@/components/sidebar-mode-tabs";
 import { BotChangeApprovalForm } from "@/components/bot-change-approval";
+import { BotDeleteDialog } from "@/components/bot-delete-dialog";
 import { BOT_CHANGE_APPROVAL_RENDERER } from "./lib/bot-change-approval";
 import { ConversationDialog } from "@/components/conversation-dialog";
 import type { ConversationTarget } from "@/components/conversation-dialog";
@@ -428,6 +429,7 @@ function BotGroup({
   onToggleTopics,
   onEdit,
   onVisibilityChange,
+  onDelete,
   hidden,
   onOpenBot,
   onNavigate,
@@ -453,6 +455,7 @@ function BotGroup({
   onToggleTopics: () => void;
   onEdit: (tab?: EditorTab) => void;
   onVisibilityChange: (hidden: boolean) => void;
+  onDelete: () => void;
   hidden: boolean;
   onOpenBot: () => void;
   onNavigate: () => void;
@@ -490,6 +493,7 @@ function BotGroup({
         { label: "Edit bot…", action: () => onEdit() },
         { label: "Add / manage projects…", action: () => onEdit("projects") },
         { label: hidden ? "Show in sidebar" : "Hide until activity", action: () => onVisibilityChange(!hidden) },
+        { label: "Delete bot…", action: onDelete },
       ]}>
       <div className="project-row relative flex cursor-grab items-center rounded-lg px-1.5 aria-current:bg-state-active data-[hidden=true]:opacity-55 data-[dragging=true]:opacity-35 active:cursor-grabbing" aria-current={botSelected ? "page" : undefined} data-hidden={hidden} data-dragging={dragging} data-bot-drop-target={metadata.id} data-conversation-drop={Boolean(dropHint)} draggable onDragStart={onDragStart} onDragEnd={onDragEnd}>
         <button type="button" className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left" onClick={(event) => { if (event.detail < 2) onOpenBot(); }} onDoubleClick={(event) => { event.preventDefault(); onToggleTopics(); }}>
@@ -620,6 +624,7 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
   const [sectionName, setSectionName] = useState("");
   const [sectionPending, setSectionPending] = useState(false);
   const [editingSection, setEditingSection] = useState<BotSection | null>(null);
+  const [deletingBot, setDeletingBot] = useState<BotMetadata | null>(null);
   const [shownTopicBots, setShownTopicBots] = useState<Set<string>>(() => new Set());
   const sidebarElement = useRef<HTMLDivElement>(null);
   const [droppedConversation, setDroppedConversation] = useState<{ botId: string; threadId: string } | null>(null);
@@ -858,6 +863,7 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
                 onToggleTopics={() => setShownTopicBots((current) => { const next = new Set(current); if (next.has(botId)) next.delete(botId); else next.add(botId); return next; })}
                 onEdit={(tab) => run(() => editBot(metadata, tab))} hidden={hiddenIds.has(botId)}
                 onVisibilityChange={(hiddenUntilActivity) => run(() => rpc.call("visibility_set", { botId, hiddenUntilActivity }).then(refresh))}
+                onDelete={() => setDeletingBot(metadata)}
                 onOpenBot={() => run(() => openBot(metadata))}
                 onReorder={(threadId, targetThreadId, position) => run(async () => { await rpc.call("conversation_reorder", { botId, threadId, targetThreadId, position }); await refresh(); })}
                 onNewConversation={() => run(() => openBotConversation(metadata))}
@@ -889,6 +895,8 @@ function BotsSidebar({ activeThreadId, onNavigate }: PluginThreadListProps) {
           {chatsTree.other.length ? <li><button type="button" className="flex min-h-7 w-full items-center gap-1 rounded-md px-1 text-left text-[10px] text-muted-foreground hover:bg-state-hover" aria-expanded={showOtherChats} aria-controls={chatsOtherId} onClick={() => setShowOtherChats((current) => !current)}><span className={showOtherChats ? "rotate-90" : ""}><TinyIcon name="chevron" /></span>{chatsTree.other.length} Other</button><ul id={chatsOtherId} hidden={!showOtherChats}>{showOtherChats ? chatsTree.other.map(renderChat) : null}</ul></li> : null}
         </ul>
       </ResizableChats> : null}
+      {deletingBot ? <BotDeleteDialog bot={deletingBot} onClose={() => setDeletingBot(null)} onDeleted={refresh}
+        check={(dryRun) => rpc.call("bot_delete", { botId: deletingBot.id, expectedUpdatedAt: deletingBot.updatedAt, ...(dryRun ? { dryRun } : {}) })} /> : null}
       {editingSection ? <RenameConversationDialog title={editingSection.name} heading="Rename section" description="Choose the section name shown in the sidebar." onClose={() => setEditingSection(null)} onSave={async (name) => {
         await rpc.call("section_update", { sectionId: editingSection.id, name }); refresh();
       }} /> : null}

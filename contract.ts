@@ -6,6 +6,7 @@ import { launchPresetSchema } from "./lib/launch-preset";
 
 import { MEMORY_MAX_CHARS, MEMORY_LIMIT_ERROR } from "./lib/memory-limit";
 import { SIDEBAR_MODES } from "./lib/sidebar-mode";
+import type { BotChangeSummary } from "./lib/bot-change-approval";
 
 const id = z.string().min(1);
 export const avatarSchema = z.object({
@@ -98,6 +99,10 @@ export const rpcContract = defineRpcContract({
   bot_create: { input: z.object({ ...editFields, hostId: id, launchPreset: launchPresetSchema.nullable().optional() }).strict(), output: metadataSchema },
   bot_update: { input: z.object({ ...editFields, hostId: id.optional(), launchPreset: launchPresetSchema.nullable().optional(), botId: id, expectedUpdatedAt: z.number(), expectedStateHashes: stateHashesSchema }).strict(), output: metadataSchema },
   bot_prepare: { input: z.object({ botId: id }).strict(), output: metadataSchema },
+  bot_delete: {
+    input: z.object({ botId: id, expectedUpdatedAt: z.number(), dryRun: z.boolean().optional() }).strict(),
+    output: z.object({ summary: z.custom<BotChangeSummary>(), blockers: z.array(z.object({ code: z.string(), message: z.string() }).strict()), exportPath: z.string().nullable() }).strict(),
+  },
   bots_reorder: { input: z.object({ bots: z.array(z.object({ botId: id, sectionId: id.nullable() }).strict()).max(500) }).strict(), output: z.object({ ok: z.literal(true) }).strict() },
   section_create: { input: z.object({ name: z.string().trim().min(1).max(80) }).strict(), output: sectionSchema },
   section_update: { input: z.object({ sectionId: id, name: z.string().trim().min(1).max(80) }).strict(), output: sectionSchema },

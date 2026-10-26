@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { BotAvatar, BotMetadata, BotSection } from "../contract";
-import type { BotChangeSummary } from "./bot-change-approval";
+import type { BotChangeBlocker, BotChangeSummary } from "./bot-change-approval";
+import { writeBotExport } from "./bot-export";
 import type { LaunchPreset } from "./launch-preset";
 import { EMPTY_HASHES, nextTimestamp, type BotStore } from "./bot-store";
 import { applyState, BotStateConflictError, stateContent, type createPrivateBotState } from "./private-state";
@@ -31,13 +33,17 @@ export type BotChange =
     revision: number;
     /** The sidebar editor's per-file preconditions (the `bot_update` RPC contract). */
     expectedStateHashes?: BotMetadata["stateHashes"];
-  } & Partial<BotFields>);
+  } & Partial<BotFields>)
+  /** Removes the bot after writing its export; its conversations become ordinary threads. */
+  | { kind: "delete"; botId: string; revision: number };
 
 export interface CheckedBotChange {
   botId: string | null;
   /** Fields that differ from the current bot; every given field for a new bot. */
   changed: (keyof BotFields)[];
   summary: BotChangeSummary;
+  /** Reasons a delete can't run yet. Creates and updates refuse with BotChangeRejected instead. */
+  blockers: BotChangeBlocker[];
 }
 
 /** A change the bot write module refuses, with a stable code for CLI output. */
@@ -72,6 +78,8 @@ const sameSet = (a: string[], b: string[]) => same([...a].sort(), [...b].sort())
  * writes. After a confirmation, a write fails only if something changed since.
  */
 export function createBotService({ bb, store, state, publish, importLegacy, serial, personalProjectId }: BotServiceDeps) {
+  // Bots with a change waiting on its caller's confirmation (an approval form).
+  const confirming = new Map<string, number>();
   // ── Rules. Exported validators serve upstream's RPC handlers in server.ts. ──
   async function linkProblem(ids: string[]): Promise<string | null> {
     if (new Set(ids).size !== ids.length) return "A project can only be linked once";
@@ -96,8 +104,41 @@ export function createBotService({ bb, store, state, publish, importLegacy, seri
     return trimmed;
   }
 
+  /** What deleting a bot would remove, and what blocks it. Reads only. */
+  async function draftDelete(change: Extract<BotChange, { kind: "delete" }>): Promise<CheckedBotChange> {
+    const bot = store.get(change.botId);
+    if (!bot) throw new BotChangeRejected("bot_not_found", "Bot no longer exists");
+    if (bot.updatedAt !== change.revision) throw new BotChangeRejected("bot_changed", "Bot changed since it was read. Check the delete again.");
+    const names = new Map((await bb.sdk.projects.list()).map((project) => [project.id, project.name]));
+    const owned = store.ownedProjects(bot.id);
+    const blockers: BotChangeBlocker[] = owned.map((projectId) => ({
+      code: "project_owned",
+      message: `${bot.name} owns ${names.get(projectId) ?? "Unavailable project"} (${projectId}). Release it first with bb bots projects release ${bot.id} ${projectId}, or leave it with bb bots projects leave ${bot.id} ${projectId}.`,
+    }));
+    if (confirming.get(bot.id)) blockers.push({ code: "approval_pending", message: `A bot change approval is pending for ${bot.name}. Answer or dismiss it first.` });
+    const section = bot.sectionId === null ? null : store.sections().find((entry) => entry.id === bot.sectionId) ?? null;
+    const ownedSet = new Set(owned);
+    return {
+      botId: bot.id, changed: [], blockers,
+      summary: {
+        kind: "delete", name: bot.name, role: bot.role, soul: bot.soul, sectionId: section?.id ?? null, section: section?.name ?? null,
+        linkedProjectIds: bot.linkedProjectIds, ownedProjectIds: owned, hidden: bot.hiddenUntilActivity,
+        projects: bot.linkedProjectIds.map((id) => ({ id, name: names.get(id) ?? "Unavailable project", owner: ownedSet.has(id) })),
+        previous: { name: bot.name, role: bot.role, soul: bot.soul },
+        removal: {
+          memoryCharacters: bot.memory.length, settingsKeys: Object.keys(bot.settings).sort(),
+          conversationCount: store.bindings().filter((binding) => binding.botId === bot.id).length,
+        },
+      },
+    };
+  }
+  function refuseBlocked(checked: CheckedBotChange) {
+    const [first] = checked.blockers;
+    if (first) throw new BotChangeRejected(first.code, checked.blockers.map((blocker) => blocker.message).join(" "));
+  }
+
   /** The bot a change would produce, or the reason it can't be made. Reads only. */
-  async function draft(change: BotChange) {
+  async function draft(change: Exclude<BotChange, { kind: "delete" }>) {
     const reject = (code: string, message: string): never => { throw new BotChangeRejected(code, message); };
     const current = change.kind === "update" ? store.get(change.botId) : null;
     if (change.kind === "update") {
@@ -166,12 +207,12 @@ export function createBotService({ bb, store, state, publish, importLegacy, seri
       projects: linkedProjectIds.map((id) => ({ id, name: names.get(id) ?? "Unavailable project", owner: owned.has(id) })), hidden,
       ...(current ? { previous: { name: current.name, role: current.role, soul: current.soul } } : {}),
     };
-    return { current, next, ownedProjectIds, checked: { botId: current?.id ?? null, changed, summary } satisfies CheckedBotChange };
+    return { current, next, ownedProjectIds, checked: { botId: current?.id ?? null, changed, summary, blockers: [] } satisfies CheckedBotChange };
   }
 
   /** What a change would do, or a BotChangeRejected saying why it would fail. Writes nothing. */
   async function checkBotChange(change: BotChange): Promise<CheckedBotChange> {
-    return (await draft(change)).checked;
+    return change.kind === "delete" ? draftDelete(change) : (await draft(change)).checked;
   }
 
   /**
@@ -179,8 +220,32 @@ export function createBotService({ bb, store, state, publish, importLegacy, seri
    * write and may throw to stop it (the approval form); no lock is held while
    * it runs. The change is then checked again under the locks.
    */
-  async function applyBotChange(change: BotChange, { confirm }: { confirm?: (checked: CheckedBotChange) => Promise<void> } = {}): Promise<{ checked: CheckedBotChange; bot: BotMetadata }> {
-    if (confirm) await confirm(await checkBotChange(change));
+  async function applyBotChange(change: BotChange, { confirm }: { confirm?: (checked: CheckedBotChange) => Promise<void> } = {}): Promise<{ checked: CheckedBotChange; bot: BotMetadata; exportPath?: string }> {
+    if (confirm) {
+      const checked = await checkBotChange(change);
+      refuseBlocked(checked);
+      const botId = change.kind === "create" ? null : change.botId;
+      if (botId) confirming.set(botId, (confirming.get(botId) ?? 0) + 1);
+      try { await confirm(checked); } finally {
+        if (botId) { const left = (confirming.get(botId) ?? 1) - 1; if (left) confirming.set(botId, left); else confirming.delete(botId); }
+      }
+    }
+    if (change.kind === "delete") {
+      return serial("registry", () => serial(change.botId, async () => {
+        const checked = await draftDelete(change);
+        refuseBlocked(checked);
+        const bot = store.require(change.botId);
+        // The export is written and read back before anything is deleted.
+        const exportPath = writeBotExport(join(dirname(store.databasePath), "state"), {
+          deletedAt: new Date().toISOString(), bot,
+          bindings: store.bindings().filter((binding) => binding.botId === bot.id).map((binding) => binding.threadId),
+          ownedProjectIds: store.ownedProjects(bot.id),
+          legacy: { state: store.state(`legacy-state:${bot.id}`), record: store.state(`legacy-record:${bot.id}`) },
+        });
+        store.remove(bot.id); publish();
+        return { checked, bot, exportPath };
+      }));
+    }
     if (change.kind === "create") {
       return serial("registry", async () => {
         await importLegacy();

@@ -56,7 +56,7 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner 
     agentBotChanges: {
       type: "select", label: "Agents may create bots", default: "ask",
       options: ["off", "ask", "allow"], experimental_optionLabels: { off: "Off", ask: "Ask", allow: "Allow" },
-      description: "Applies when an agent runs bb bots create or update from a BB thread. Ask shows an approval form in that thread; Off refuses; Allow runs directly. Commands run from your own terminal outside BB always work. Agents use your shell, so this is a guardrail, not a security boundary.",
+      description: "Applies when an agent runs bb bots create, update or delete from a BB thread. Ask shows an approval form in that thread; Off refuses; Allow runs directly, except deletes, which always ask. Commands run from your own terminal outside BB always work. Agents use your shell, so this is a guardrail, not a security boundary.",
     },
   });
   async function agentBotChanges(): Promise<AgentBotChanges> {
@@ -129,10 +129,11 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner 
    */
   async function authorize(ctx: PluginCliContext, checked: CheckedBotChange) {
     const policy = await agentBotChanges();
-    if (!ctx.threadId || policy === "allow") return;
+    // An agent's delete always asks, even with Allow, so deletion is never silent.
+    if (!ctx.threadId || (policy === "allow" && checked.summary.kind !== "delete")) return;
     if (policy === "off") throw new PluginCliError("Agents may not create or edit bots: “Agents may create bots” is Off in the Bots Sidebar plugin settings. Use the sidebar instead.", { code: "agent_bot_changes_off" });
     const change = await approvalFor(checked, ctx);
-    const verb = change.kind === "create" ? "Create" : "Update";
+    const verb = change.kind === "create" ? "Create" : change.kind === "delete" ? "Delete" : "Update";
     const result = await bb.ui.requestInput({
       threadId: ctx.threadId, rendererId: BOT_CHANGE_APPROVAL_RENDERER,
       title: `${verb} bot ${change.name}`.slice(0, 80), payload: change as unknown as JsonValue, timeoutMs: APPROVAL_TIMEOUT_MS,
@@ -145,8 +146,8 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner 
 
   const cli = defineCli({
     name: "bots",
-    summary: "Create, edit and list bots, organise their projects and sections, and message or start their conversations",
-    description: "Selectors accept an exact ID or an exact, unique name. When an agent runs create or update from a BB thread, the “Agents may create bots” plugin setting applies (Off, Ask or Allow; Ask shows an approval form in that thread). Output never includes bot memory or settings.",
+    summary: "Create, edit, delete and list bots, organise their projects and sections, and message or start their conversations",
+    description: "Selectors accept an exact ID or an exact, unique name. When an agent runs create, update or delete from a BB thread, the “Agents may create bots” plugin setting applies (Off, Ask or Allow; Ask shows an approval form in that thread). An agent's delete always shows the form, even with Allow. Output never includes bot memory or settings.",
     commands: {
       list: cliCommand({
         summary: "List bot IDs, activity, visibility, and owned/joined project names without private state",
@@ -250,6 +251,26 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner 
           }));
           const view = await publicBot(store.require(current.id));
           return output(options.json, { bot: view, changed: checked.changed.length > 0 }, `Updated ${describeBot(view)}`);
+        },
+      }),
+
+      delete: cliCommand({
+        summary: "Delete a bot after writing an export of it; its conversations stay as ordinary threads (agents: always asks the user)",
+        description: "Refuses while the bot owns a project or a change approval for it is pending. --dry-run reports what would be removed and any blockers, exiting 1 when blocked. The export (identity, SOUL, memory, settings, bindings) is written under the plugin's data folder before anything is deleted, and its path is printed.",
+        positionals: [{ name: "bot", description: "Bot ID or exact name", required: true }],
+        options: { "dry-run": { type: "boolean", description: "Report what would be removed without deleting" }, json },
+        async run({ positionals, options }, ctx) {
+          const bot = botFor(positionals.bot);
+          const change: BotChange = { kind: "delete", botId: bot.id, revision: bot.updatedAt };
+          if (options["dry-run"]) {
+            const checked = await rejected(service.checkBotChange(change));
+            const report = { dryRun: true, deletable: checked.blockers.length === 0, bot: checked.summary, blockers: checked.blockers };
+            return { exitCode: report.deletable ? 0 : 1, stdout: options.json ? JSON.stringify(report) : describeDeletion(checked) };
+          }
+          const { checked, exportPath } = await rejected(service.applyBotChange(change, { confirm: (checked) => authorize(ctx, checked) }));
+          const kept = checked.summary.removal?.conversationCount ?? 0;
+          return output(options.json, { deleted: { id: bot.id, name: bot.name }, exportPath, conversationsKept: kept },
+            `Deleted ${printable(bot.name)} (${bot.id}). ${kept} conversation${kept === 1 ? "" : "s"} kept as ordinary threads.\nExport: ${exportPath}`);
         },
       }),
 
@@ -376,6 +397,22 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner 
         return output(options.json, { bot: view, changed: result.changed }, `${result.changed ? "Updated" : "No change for"} ${describeBot(view)}`);
       },
     })]));
+  }
+
+  function describeDeletion(checked: CheckedBotChange) {
+    const { summary, blockers } = checked;
+    const removal = summary.removal!;
+    return [
+      `Would delete ${printable(summary.name)} (${checked.botId}). Nothing was deleted.`,
+      `  Role: ${printable(summary.role) || "—"}`,
+      `  Section: ${summary.section ? printable(summary.section) : "Main"}`,
+      `  Instructions (SOUL): ${summary.soul.length} characters`,
+      `  Memory: ${removal.memoryCharacters} characters`,
+      `  Settings: ${removal.settingsKeys.map(printable).join(", ") || "none"}`,
+      `  Projects: ${summary.projects.map((project) => `${printable(project.name)}${project.owner ? " (owner)" : ""}`).join(", ") || "none"}`,
+      `  Conversations: ${removal.conversationCount}, kept as ordinary threads`,
+      ...(blockers.length ? ["Blocked:", ...blockers.map((blocker) => `  ${blocker.code}: ${printable(blocker.message)}`)] : ["An export is written before deleting."]),
+    ].join("\n");
   }
 
   /** The approval form shows exactly the checked change, plus who asked. */

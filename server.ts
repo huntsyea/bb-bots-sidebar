@@ -223,6 +223,12 @@ export default async function plugin(bb: BbPluginApi) {
     },
     bot_create: async (input) => (await botService.applyBotChange({ kind: "create", ...input })).bot,
     bot_prepare: ({ botId }) => serial(botId, () => state.prepare(botId)),
+    bot_delete: async ({ botId, expectedUpdatedAt, dryRun }) => {
+      const change = { kind: "delete", botId, revision: expectedUpdatedAt } as const;
+      if (dryRun) { const checked = await botService.checkBotChange(change); return { summary: checked.summary, blockers: checked.blockers, exportPath: null }; }
+      const { checked, exportPath } = await botService.applyBotChange(change);
+      return { summary: checked.summary, blockers: [], exportPath: exportPath! };
+    },
     bot_update: async ({ botId, expectedUpdatedAt, ...fields }) => (await botService.applyBotChange({ kind: "update", botId, revision: expectedUpdatedAt, ...fields })).bot,
     bots_reorder: ({ bots: placements }) => serial("registry", async () => {
       const bots = store.list();

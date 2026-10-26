@@ -144,6 +144,24 @@ export function createBotStore(bb: BbPluginApi) {
       }).immediate();
     },
     require(id: string) { const bot = get(id); if (!bot) throw new Error("Bot no longer exists"); return bot; },
+    /**
+     * Deletes a bot that owns no project, with its thread bindings, pending
+     * starts and private records. The threads themselves are untouched.
+     * Returns the thread IDs it unbound.
+     */
+    remove(id: string): string[] {
+      return db.transaction(() => {
+        if (!get(id)) throw new Error("Bot no longer exists");
+        if (ownedProjects(id).length) throw new Error("Release this bot's owned projects before deleting it");
+        const threads = (db.prepare("SELECT thread_id AS threadId FROM bot_threads WHERE bot_id = ? ORDER BY thread_id").all(id) as { threadId: string }[]).map((row) => row.threadId);
+        db.prepare("DELETE FROM bot_starts WHERE bot_id = ?").run(id);
+        db.prepare("DELETE FROM bot_threads WHERE bot_id = ?").run(id);
+        db.prepare("DELETE FROM bot_project_owners WHERE bot_id = ?").run(id);
+        for (const key of [`legacy-state:${id}`, `legacy-record:${id}`, `private-state-warning:${id}`]) db.prepare("DELETE FROM bot_state WHERE key = ?").run(key);
+        db.prepare("DELETE FROM bots WHERE id = ?").run(id);
+        return threads;
+      }).immediate();
+    },
     saveAll(bots: BotMetadata[]) { db.transaction(() => { bots.forEach(save); })(); },
     bindings(): { threadId: string; botId: string }[] { return db.prepare("SELECT thread_id AS threadId, bot_id AS botId FROM bot_threads ORDER BY thread_id").all() as { threadId: string; botId: string }[]; },
     sections(): BotSection[] { return (state<unknown[]>("sections") ?? []).map((value) => sectionSchema.parse(value)).sort((a, b) => a.order - b.order); },

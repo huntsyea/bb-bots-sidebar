@@ -27,6 +27,7 @@ The BBP-5 merge is now in `main`. The preparation results below are historical.
 | A bot change is checked as a whole before it runs (BBP-53, fixes BBP-47). `checkBotChange` returns the checked change or a coded refusal (`project_owned`, `invalid_name`, …). `applyBotChange` checks it, lets the caller confirm it, then checks again under the locks and writes. `bb bots create/update --dry-run` and the approval form both show the checked change. Updates name only the fields that change, plus one revision (`updatedAt`); the `bot_update` RPC keeps `expectedStateHashes` as an extra precondition. An update that changes nothing writes nothing. | `lib/bot-service.ts`, `lib/bots-cli.ts`, `lib/bot-change-approval.ts`, `tests/bot-service.test.ts` |
 | "Agents may create bots" setting (Off / Ask / Allow, default Ask; stored name `agentBotChanges`) gates `create` and `update` from a BB thread; Ask shows an approval form in that thread. The bots CLI module defines the setting itself (BBP-54). | `bb.settings.define` and `authorize` in `lib/bots-cli.ts`, `components/bot-change-approval.tsx`, `lib/bot-change-approval.ts` |
 | `listBotConversations` answers ownership in memory over the listed threads with `resolveOwner`'s rule and falls back to `resolveOwner` only for an unlisted ancestor (BBP-57). This removes about one `threads.get` per open thread from every reorder, drop-to-end assign and `bb bots message`. Offered upstream as [tobi/bb-bots-sidebar#8](https://github.com/tobi/bb-bots-sidebar/pull/8), the same change; drop this row once that merges and is synced. | `lib/bot-conversations.ts`, call sites in `server.ts` and `lib/bots-cli.ts`, `tests/bot-conversations.test.ts` |
+| Deleting a bot (BBP-65): `bb bots delete <bot> [--dry-run] [--json]`, the `bot_delete` RPC and "Delete bot…" in the bot's menu, as a checked change in the bot write module. It is refused while the bot owns a project (`project_owned`) or a change approval for it is pending (`approval_pending`). An agent's delete always shows the approval form, even with Allow. Before anything is deleted, it writes `state/_deleted-bots/<bot-id>-<UTC stamp>.json` under the plugin data folder (format `bots-sidebar.deleted-bot` v1: the full stored record, bindings, legacy records and readable SOUL/MEMORY/settings) and reads it back. Deleting removes the bot's rows, bindings, starts and private records; its conversations stay as ordinary threads. The bot's own `state/<bot-id>/` export folder is left in place. No schema change. | `lib/bot-service.ts`, `lib/bot-export.ts`, `remove` in `lib/bot-store.ts`, `lib/bots-cli.ts`, `components/bot-delete-dialog.tsx`, `components/bot-change-approval.tsx`, `app.tsx`, `bot_delete` in `contract.ts`/`server.ts` |
 | Tests run with `--no-experimental-webstorage`, so Node 26's global `localStorage` does not shadow jsdom's. | `package.json`, `tests/setup.ts` |
 
 Keep the plugin id `bots-sidebar` and the KV key `sidebar:code-provider`. Changing either loses stored state.
@@ -153,6 +154,8 @@ Choose one data recovery method before reverting the code:
   database. It removes only top-level `launchPreset` keys, including JSON null,
   in one transaction using `json_type(data,'$.launchPreset') IS NOT NULL`.
   It prints the changed-row count; a repeat prints zero.
+  Bots deleted since the backup stay deleted; their exports in
+  `state/_deleted-bots/` remain the restore source.
   Other fields and tables remain intact. This deliberately discards saved launch
   defaults. It does not remove unrelated incompatible fields from future updates.
 
@@ -164,7 +167,9 @@ Choose one data recovery method before reverting the code:
 - **Restore pre-update state:** with bots-sidebar disabled, preserve the entire
   current data directory in a separate recovery folder. Use SQLite `.restore` to restore the
   chosen backup's `data.db` into the target database, then replace `state/` with
-  the matching backup copy. Do not copy a database over active WAL sidecars or
+  the matching backup copy. Then copy `state/_deleted-bots/` back from the
+  preserved current folder: it holds the exports of bots deleted since the
+  backup, and SQLite cannot regenerate it. Do not copy a database over active WAL sidecars or
   combine a database and state directory from different backups. This discards
   bot changes made since the backup. Verify `PRAGMA integrity_check` returns `ok`.
 
@@ -174,7 +179,9 @@ run `npm ci` and `npm run build`, then run
 status. Report the rollback result to Warden. A code-only rollback to `df530b0`
 or earlier is unsafe: the old strict metadataSchema rejects any `launchPreset`
 key, including JSON null. Private files are exports; after the strip, the
-restored code regenerates them from SQLite when state is prepared.
+restored code regenerates them from SQLite when state is prepared. The exception
+is `state/_deleted-bots/` (BBP-65): those exports are the only copy of deleted
+bots, so never delete or overwrite that folder during recovery.
 
 Validation used copies only: a read-only live backup contained five bots. Adding
 a preset in a separate copy made main's unchanged `createBotStore().list()` throw;
