@@ -13,7 +13,7 @@ import { listBotConversations } from "./lib/bot-conversations";
 import { botProjectContext } from "./lib/project-context";
 import { BOT_GUIDANCE, botInstructions } from "./lib/bot-instructions";
 import { MEMORY_MAX_CHARS, validateMemory } from "./lib/memory-limit";
-import { providerForMode, rememberedThreadsProvider } from "./lib/sidebar-mode";
+import { createSidebarMode } from "./lib/sidebar-mode";
 export { rpcContract, avatarSchema } from "./contract";
 export type { BotAvatar, BotMetadata, BotSection, ProjectCreateInput } from "./contract";
 
@@ -201,42 +201,13 @@ export default async function plugin(bb: BbPluginApi) {
   });
   bb.events.on("thread.created", async ({ thread }) => { await routeNewThread(thread, true); });
 
-  const settings = bb.settings.define({
-    agentBotChanges: {
-      type: "select", label: "Agents may create bots", default: "ask",
-      options: ["off", "ask", "allow"], experimental_optionLabels: { off: "Off", ask: "Ask", allow: "Allow" },
-      description: "Applies when an agent runs bb bots create or update from a BB thread. Ask shows an approval form in that thread; Off refuses; Allow runs directly. Commands run from your own terminal outside BB always work. Agents use your shell, so this is a guardrail, not a security boundary.",
-    },
-  });
-  registerBotsCli(bb, {
-    store, service: botService, resolveOwner,
-    agentBotChanges: async () => {
-      const value = (await settings.get()).agentBotChanges;
-      return value === "off" || value === "allow" ? value : "ask";
-    },
-  });
+  registerBotsCli(bb, { store, service: botService, resolveOwner });
   registerBotMentions(bb, store);
 
-  const THREAD_LIST_PROVIDER = "sidebar.threadListProvider" as const;
-  // Key predates the Code → Threads rename; kept so the remembered list survives.
-  const THREADS_PROVIDER_KEY = "sidebar:code-provider";
-  // Read the active provider and remember it as the Threads tab's list whenever
-  // it is not ours, so a choice made in Settings → Appearance sticks.
-  const readThreadListProvider = async () => {
-    const entry = (await bb.sdk.system.uiPreferences.list()).preferences[THREAD_LIST_PROVIDER];
-    const stored = (await bb.storage.kv.get<string>(THREADS_PROVIDER_KEY)) ?? null;
-    const threadsProvider = rememberedThreadsProvider(stored, entry.value);
-    if (threadsProvider !== stored && threadsProvider !== null) await bb.storage.kv.set(THREADS_PROVIDER_KEY, threadsProvider);
-    return { ...entry, threadsProvider };
-  };
-
+  const sidebarMode = createSidebarMode(bb);
   bb.rpc.register(rpcContract, {
-    sidebar_mode_get: async () => ({ provider: (await readThreadListProvider()).value }),
-    sidebar_mode_set: async ({ mode }) => {
-      const { revision, threadsProvider } = await readThreadListProvider();
-      const result = await bb.sdk.system.uiPreferences.set({ key: THREAD_LIST_PROVIDER, value: providerForMode(mode, threadsProvider), expectedRevision: revision });
-      return { provider: result.value };
-    },
+    sidebar_mode_get: () => sidebarMode.get(),
+    sidebar_mode_set: ({ mode }) => sidebarMode.set(mode),
     project_browse: ({ hostId, path }) => browseProjectDirectory(bb, { hostId, path }),
     project_create: (input) => serial("project-create", () => serial(`project-create:${input.requestId}`, () => createWorkProject(bb, store, input))),
     bots_list: async () => {

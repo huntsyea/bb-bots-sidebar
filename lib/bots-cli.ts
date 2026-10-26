@@ -21,7 +21,6 @@ export interface BotsCliDeps {
   store: BotStore;
   service: BotService;
   resolveOwner: (threadId: string, persist?: boolean) => Promise<string | null>;
-  agentBotChanges: () => Promise<AgentBotChanges>;
 }
 
 type Sender = { threadId: string; bot: BotMetadata | null } | null;
@@ -51,7 +50,19 @@ const json = { type: "boolean", description: "Print machine-readable JSON" } as 
 const ok = (stdout: string) => ({ exitCode: 0, stdout });
 const output = (asJson: boolean, value: unknown, text: string) => ok(asJson ? JSON.stringify(value) : text);
 
-export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner, agentBotChanges }: BotsCliDeps) {
+export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner }: BotsCliDeps) {
+  // The plugin setting that gates agents; its stored name `agentBotChanges` must not change.
+  const settings = bb.settings.define({
+    agentBotChanges: {
+      type: "select", label: "Agents may create bots", default: "ask",
+      options: ["off", "ask", "allow"], experimental_optionLabels: { off: "Off", ask: "Ask", allow: "Allow" },
+      description: "Applies when an agent runs bb bots create or update from a BB thread. Ask shows an approval form in that thread; Off refuses; Allow runs directly. Commands run from your own terminal outside BB always work. Agents use your shell, so this is a guardrail, not a security boundary.",
+    },
+  });
+  async function agentBotChanges(): Promise<AgentBotChanges> {
+    const value = (await settings.get()).agentBotChanges;
+    return value === "off" || value === "allow" ? value : "ask";
+  }
   // ── Lookups: every selector accepts an exact ID or an exact, unique name. ──
   function pick<T extends { id: string; name: string }>(items: T[], selector: string, kind: string, listCommand: string): T {
     const byId = items.find((item) => item.id === selector);
