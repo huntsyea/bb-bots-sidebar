@@ -2,7 +2,7 @@ import { cliCommand, defineCli, PluginCliError } from "@get-bb/plugin-sdk";
 import type { BbPluginApi, JsonValue, PluginCliContext } from "@get-bb/plugin-sdk";
 import type { BotMetadata, BotSection } from "../contract";
 import type { BotStore } from "./bot-store";
-import type { BotService, ProjectRoleAction } from "./bot-service";
+import { BotChangeRejected, type BotChange, type BotService, type CheckedBotChange, type ProjectRoleAction } from "./bot-service";
 import type { BotChangeApproval } from "./bot-change-approval";
 import { BOT_CHANGE_APPROVAL_RENDERER } from "./bot-change-approval";
 import { listBotConversations } from "./bot-conversations";
@@ -116,10 +116,11 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner,
    * Gate for changes to what a bot is. A call from a BB thread counts as an
    * agent; outside BB there is no thread to show a form in, so it runs.
    */
-  async function authorize(ctx: PluginCliContext, change: BotChangeApproval) {
+  async function authorize(ctx: PluginCliContext, checked: CheckedBotChange) {
     const policy = await agentBotChanges();
     if (!ctx.threadId || policy === "allow") return;
     if (policy === "off") throw new PluginCliError("Agents may not create or edit bots: “Agents may create bots” is Off in the Bots Sidebar plugin settings. Use the sidebar instead.", { code: "agent_bot_changes_off" });
+    const change = await approvalFor(checked, ctx);
     const verb = change.kind === "create" ? "Create" : "Update";
     const result = await bb.ui.requestInput({
       threadId: ctx.threadId, rendererId: BOT_CHANGE_APPROVAL_RENDERER,
@@ -193,17 +194,16 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner,
         async run({ positionals, options }, ctx) {
           const owned = await projectsFor(options.own);
           const linked = [...new Set([...(await projectsFor(options.project)), ...owned])];
-          const input = {
-            name: positionals.name.trim(), role: options.role?.trim() ?? "", soul: options.soul ?? "",
+          const change: BotChange = {
+            kind: "create", name: positionals.name, role: options.role ?? "", soul: options.soul ?? "",
             hostId: await machineFor(options.machine, ctx), avatar: randomAvatar(),
-            sectionId: sectionFor(options.section, null), linkedProjectIds: linked, ownedProjectIds: owned,
+            sectionId: sectionFor(options.section, null), linkedProjectIds: linked, ownedProjectIds: owned, hidden: options.hidden ?? false,
           };
-          validateIdentity(input);
-          const preview = { name: input.name, role: input.role, soul: input.soul, sectionId: input.sectionId, linkedProjectIds: linked, ownedProjectIds: owned, hidden: options.hidden };
-          if (options["dry-run"]) return output(options.json, { dryRun: true, bot: preview }, `Would create ${printable(input.name)}. Nothing was saved.`);
-          await authorize(ctx, await approvalFor("create", preview, ctx));
-          let bot = await service.createBot(input);
-          if (options.hidden) bot = await service.setVisibility(bot.id, true);
+          if (options["dry-run"]) {
+            const checked = await rejected(service.checkBotChange(change));
+            return output(options.json, { dryRun: true, bot: checked.summary }, `Would create ${printable(checked.summary.name)}. Nothing was saved.`);
+          }
+          const { bot } = await rejected(service.applyBotChange(change, { confirm: (checked) => authorize(ctx, checked) }));
           const view = await publicBot(bot);
           return output(options.json, { bot: view }, `Created ${describeBot(view)}\nStart a conversation: bb bots chat ${bot.id} "Hello"`);
         },
@@ -224,22 +224,21 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner,
         constraints: [{ kind: "at-least-one", options: ["name", "role", "soul", "section", "machine", "visibility"] }],
         async run({ positionals, options }, ctx) {
           const current = botFor(positionals.bot);
-          const next = {
-            name: options.name?.trim() ?? current.name, role: options.role?.trim() ?? current.role, soul: options.soul ?? current.soul,
-            sectionId: sectionFor(options.section, current.sectionId),
-            hostId: options.machine !== undefined ? await machineFor(options.machine, ctx) : current.hostId,
+          // The revision is the one read before approval, so a concurrent edit fails instead of being overwritten.
+          const change: BotChange = {
+            kind: "update", botId: current.id, revision: current.updatedAt,
+            ...(options.name !== undefined ? { name: options.name } : {}), ...(options.role !== undefined ? { role: options.role } : {}),
+            ...(options.soul !== undefined ? { soul: options.soul } : {}),
+            ...(options.section !== undefined ? { sectionId: sectionFor(options.section, current.sectionId) } : {}),
+            ...(options.machine !== undefined ? { hostId: await machineFor(options.machine, ctx) } : {}),
+            ...(options.visibility !== undefined ? { hidden: options.visibility === "hidden" } : {}),
           };
-          validateIdentity(next);
-          const identityChanged = next.name !== current.name || next.role !== current.role || next.soul !== current.soul || next.sectionId !== current.sectionId || next.hostId !== current.hostId;
-          const hidden = options.visibility === undefined ? current.hiddenUntilActivity : options.visibility === "hidden";
-          if (identityChanged) {
-            await authorize(ctx, await approvalFor("update", { ...next, linkedProjectIds: current.linkedProjectIds, ownedProjectIds: store.ownedProjects(current.id), hidden, previous: { name: current.name, role: current.role, soul: current.soul } }, ctx));
-            // The revision is the one read before approval, so a concurrent edit fails instead of being overwritten.
-            await service.updateBot({ ...next, botId: current.id, avatar: current.avatar, linkedProjectIds: current.linkedProjectIds, expectedUpdatedAt: current.updatedAt, expectedStateHashes: current.stateHashes });
-          }
-          if (hidden !== current.hiddenUntilActivity) await service.setVisibility(current.id, hidden);
+          // Visibility alone is not a change to what the bot is, so it needs no approval.
+          const { checked } = await rejected(service.applyBotChange(change, {
+            confirm: async (checked) => { if (checked.changed.some((field) => field !== "hidden")) await authorize(ctx, checked); },
+          }));
           const view = await publicBot(store.require(current.id));
-          return output(options.json, { bot: view, changed: identityChanged || hidden !== current.hiddenUntilActivity }, `Updated ${describeBot(view)}`);
+          return output(options.json, { bot: view, changed: checked.changed.length > 0 }, `Updated ${describeBot(view)}`);
         },
       }),
 
@@ -259,9 +258,7 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner,
         positionals: [{ name: "name", description: "Section name (1-80 characters)", required: true }],
         options: { json },
         async run({ positionals, options }) {
-          const name = positionals.name.trim();
-          if (!name || name.length > 80) throw new PluginCliError("Section names have 1-80 characters.", { code: "invalid_section_name" });
-          const section = await service.createSection(name);
+          const section = await rejected(service.createSection(positionals.name));
           return output(options.json, { section }, `Created section ${printable(section.name)} (${section.id}).`);
         },
       }),
@@ -272,9 +269,7 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner,
         async run({ positionals, options }) {
           const target = sectionFor(positionals.section, null);
           if (target === null) throw new PluginCliError("Main is the default section and cannot be renamed.", { code: "main_section" });
-          const name = positionals.name.trim();
-          if (!name || name.length > 80) throw new PluginCliError("Section names have 1-80 characters.", { code: "invalid_section_name" });
-          const section = await service.renameSection(target, name);
+          const section = await rejected(service.renameSection(target, positionals.name));
           return output(options.json, { section }, `Renamed section to ${printable(section.name)}.`);
         },
       }),
@@ -372,16 +367,10 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner,
     })]));
   }
 
-  async function approvalFor(kind: BotChangeApproval["kind"], change: Omit<BotChangeApproval, "kind" | "projects" | "section" | "requestedBy">, ctx: PluginCliContext): Promise<BotChangeApproval> {
-    const names = new Map((await bb.sdk.projects.list()).map((project) => [project.id, project.name]));
-    const owned = new Set(change.ownedProjectIds);
-    const section = change.sectionId ? store.sections().find((entry) => entry.id === change.sectionId)?.name ?? null : null;
+  /** The approval form shows exactly the checked change, plus who asked. */
+  async function approvalFor(checked: CheckedBotChange, ctx: PluginCliContext): Promise<BotChangeApproval> {
     const requester = ctx.threadId ? await resolveOwner(ctx.threadId, false) : null;
-    return {
-      kind, ...change, section,
-      projects: change.linkedProjectIds.map((id: string) => ({ id, name: names.get(id) ?? "Unavailable project", owner: owned.has(id) })),
-      requestedBy: ctx.threadId ? { threadId: ctx.threadId, botName: requester ? store.get(requester)?.name ?? null : null } : null,
-    };
+    return { ...checked.summary, requestedBy: ctx.threadId ? { threadId: ctx.threadId, botName: requester ? store.get(requester)?.name ?? null : null } : null };
   }
 
   async function listActivity(ctx: PluginCliContext) {
@@ -433,10 +422,12 @@ export function registerBotsCli(bb: BbPluginApi, { store, service, resolveOwner,
   }
 }
 
-function validateIdentity({ name, role, soul }: { name: string; role: string; soul: string }) {
-  if (!name || name.length > 120) throw new PluginCliError("Bot names have 1-120 characters.", { code: "invalid_name" });
-  if (role.length > 80) throw new PluginCliError("Roles have at most 80 characters.", { code: "invalid_role" });
-  if (soul.length > 4096) throw new PluginCliError("Instructions (SOUL) have at most 4096 characters.", { code: "invalid_soul" });
+/** The bot write module's refusals, as CLI errors with the same codes. */
+async function rejected<T>(operation: Promise<T>): Promise<T> {
+  try { return await operation; } catch (error) {
+    if (error instanceof BotChangeRejected) throw new PluginCliError(error.message, { code: error.code });
+    throw error;
+  }
 }
 function isApproved(value: JsonValue): boolean {
   return typeof value === "object" && value !== null && !Array.isArray(value) && value.approved === true;

@@ -1,20 +1,50 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import type { z } from "zod";
-import type { BotMetadata, BotSection, rpcContract } from "../contract";
+import type { BotAvatar, BotMetadata, BotSection } from "../contract";
+import type { BotChangeSummary } from "./bot-change-approval";
+import type { LaunchPreset } from "./launch-preset";
 import { EMPTY_HASHES, nextTimestamp, type BotStore } from "./bot-store";
 import { applyState, BotStateConflictError, stateContent, type createPrivateBotState } from "./private-state";
 
 const sha256 = (content: string) => createHash("sha256").update(content).digest("hex");
 
-export type BotCreateInput = z.infer<typeof rpcContract.bot_create.input>;
-export type BotUpdateInput = z.infer<typeof rpcContract.bot_update.input>;
 export type ProjectRoleAction = "join" | "leave" | "own" | "release";
 type SpawnArgs = Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0];
 /** What starting a bot conversation needs: a project, an environment and the first message. */
 export type ConversationStart = Pick<SpawnArgs, "projectId" | "environment"> & Partial<Omit<SpawnArgs, "projectId" | "environment" | "input" | "prompt">> & {
   input: Extract<SpawnArgs, { input: unknown }>["input"];
 };
+
+/** What a bot is, as one change can set it. Omitted fields keep their current value. */
+export interface BotFields {
+  name: string; role: string; soul: string; hostId: string; avatar: BotAvatar;
+  sectionId: string | null; linkedProjectIds: string[]; ownedProjectIds: string[];
+  /** Hidden in the sidebar until the bot has activity. */
+  hidden: boolean;
+  memory: string; settings: BotMetadata["settings"]; launchPreset: LaunchPreset | null;
+}
+export type BotChange =
+  | ({ kind: "create" } & Pick<BotFields, "name" | "hostId" | "avatar"> & Partial<Omit<BotFields, "name" | "hostId" | "avatar">>)
+  | ({
+    kind: "update"; botId: string;
+    /** The bot's `updatedAt` when the caller read it; any later write makes the change fail. */
+    revision: number;
+    /** The sidebar editor's per-file preconditions (the `bot_update` RPC contract). */
+    expectedStateHashes?: BotMetadata["stateHashes"];
+  } & Partial<BotFields>);
+
+export interface CheckedBotChange {
+  botId: string | null;
+  /** Fields that differ from the current bot; every given field for a new bot. */
+  changed: (keyof BotFields)[];
+  summary: BotChangeSummary;
+}
+
+/** A change the bot write module refuses, with a stable code for CLI output. */
+export class BotChangeRejected extends Error {
+  override name = "BotChangeRejected";
+  constructor(readonly code: string, message: string) { super(message); }
+}
 
 export interface BotServiceDeps {
   bb: BbPluginApi;
@@ -26,76 +56,161 @@ export interface BotServiceDeps {
   personalProjectId: () => Promise<string>;
 }
 
+const IDENTITY_LIMITS = { name: 120, role: 80, soul: 4096 };
+const STATE_FILES = ["SOUL.md", "MEMORY.md", "settings.json"] as const;
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const sameSet = (a: string[], b: string[]) => same([...a].sort(), [...b].sort());
+
 /**
  * Every bot write the sidebar, the `bb bots` CLI and the bots' own tools share:
  * validation, locking ("registry" for cross-bot changes, the bot id for one
  * bot), optimistic concurrency, private-state mirroring and the realtime ping.
+ *
+ * A bot change is checked as a whole before it runs: `checkBotChange` says what
+ * it would do or why it would fail, and `applyBotChange` checks it, lets the
+ * caller confirm the checked change, then checks again under the locks and
+ * writes. After a confirmation, a write fails only if something changed since.
  */
 export function createBotService({ bb, store, state, publish, importLegacy, serial, personalProjectId }: BotServiceDeps) {
-  async function validateLinks(ids: string[]) {
-    if (new Set(ids).size !== ids.length) throw new Error("A project can only be linked once");
+  // ── Rules. Exported validators serve upstream's RPC handlers in server.ts. ──
+  async function linkProblem(ids: string[]): Promise<string | null> {
+    if (new Set(ids).size !== ids.length) return "A project can only be linked once";
     const projects = await bb.sdk.projects.list();
     const legacyHomes = new Set(store.list().map((bot) => bot.legacyHomeProjectId));
-    for (const id of ids) {
-      if (!projects.some((project) => project.id === id && project.kind === "standard") || legacyHomes.has(id)) throw new Error("Link an existing work project, not a legacy bot home");
-    }
+    const invalid = ids.some((id) => !projects.some((project) => project.id === id && project.kind === "standard") || legacyHomes.has(id));
+    return invalid ? "Link an existing work project, not a legacy bot home" : null;
+  }
+  async function validateLinks(ids: string[]) {
+    const problem = await linkProblem(ids);
+    if (problem) throw new Error(problem);
   }
   function validateSection(id: string | null) {
     if (id !== null && !store.sections().some((section) => section.id === id)) throw new Error("Section no longer exists");
   }
-  async function validateHost(hostId: string) {
-    if (!(await bb.sdk.hosts.list()).some((host) => host.id === hostId)) throw new Error("Choose an enrolled execution machine");
-  }
   async function validateConversationProject(bot: BotMetadata, projectId: string) {
     if (projectId !== await personalProjectId() && !bot.linkedProjectIds.includes(projectId)) throw new Error("Choose a projectless conversation or link this project to the bot first");
   }
-
-  function createBot({ name, role, hostId, avatar, sectionId, linkedProjectIds, ownedProjectIds, soul, memory, settings, launchPreset }: BotCreateInput): Promise<BotMetadata> {
-    return serial("registry", async () => {
-      await importLegacy(); await validateLinks(linkedProjectIds); if (ownedProjectIds) await validateLinks(ownedProjectIds); validateSection(sectionId);
-      await validateHost(hostId);
-      const id = `bot_${randomUUID().replaceAll("-", "")}`;
-      let created: BotMetadata = { id, name, role, hostId, stateReady: true, legacyHomeProjectId: null, avatar, sectionId, linkedProjectIds, soul, agents: "", memory: "", settings: {}, stateHashes: { ...EMPTY_HASHES }, order: store.list().length, mainThreadId: null, hiddenUntilActivity: false, hiddenAt: null, updatedAt: Date.now(), legacyProjectId: null };
-      if (launchPreset !== undefined) created.launchPreset = launchPreset;
-      if (memory !== undefined) created = applyState(created, "MEMORY.md", memory);
-      if (settings !== undefined) created = applyState(created, "settings.json", stateContent({ ...created, settings }, "settings.json"));
-      store.saveWithProjects(created, ownedProjectIds);
-      const ready = await state.prepare(id); publish(); return ready;
-    });
+  function sectionName(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.length > 80) throw new BotChangeRejected("invalid_section_name", "Section names have 1-80 characters.");
+    return trimmed;
   }
 
-  function updateBot({ botId, expectedUpdatedAt, expectedStateHashes, ownedProjectIds, memory, settings, ...fields }: BotUpdateInput): Promise<BotMetadata> {
-    return serial("registry", () => serial(botId, async () => {
-      const bot = await state.prepare(botId);
-      if (bot.updatedAt !== expectedUpdatedAt) throw new Error("Bot changed while editing. Reopen the editor or read identity again to avoid overwriting newer changes.");
-      if (JSON.stringify(fields.linkedProjectIds) !== JSON.stringify(bot.linkedProjectIds)) await validateLinks(fields.linkedProjectIds);
-      if (ownedProjectIds) {
-        const existingOwned = new Set(store.ownedProjects(botId));
-        await validateLinks(ownedProjectIds.filter((id) => !existingOwned.has(id)));
+  /** The bot a change would produce, or the reason it can't be made. Reads only. */
+  async function draft(change: BotChange) {
+    const reject = (code: string, message: string): never => { throw new BotChangeRejected(code, message); };
+    const current = change.kind === "update" ? store.get(change.botId) : null;
+    if (change.kind === "update") {
+      if (!current) reject("bot_not_found", "Bot no longer exists");
+      if (current!.updatedAt !== change.revision) reject("bot_changed", "Bot changed while editing. Reopen the editor or read identity again to avoid overwriting newer changes.");
+    }
+    const previousOwned = current ? store.ownedProjects(current.id) : [];
+    const name = (change.name ?? current?.name ?? "").trim();
+    const role = (change.role ?? current?.role ?? "").trim();
+    const soul = change.soul ?? current?.soul ?? "";
+    if (!name || name.length > IDENTITY_LIMITS.name) reject("invalid_name", "Bot names have 1-120 characters.");
+    if (role.length > IDENTITY_LIMITS.role) reject("invalid_role", "Roles have at most 80 characters.");
+    if (soul.length > IDENTITY_LIMITS.soul) reject("invalid_soul", "Instructions (SOUL) have at most 4096 characters.");
+    const sectionId = change.sectionId !== undefined ? change.sectionId : current?.sectionId ?? null;
+    const section = sectionId === null ? null : store.sections().find((entry) => entry.id === sectionId) ?? null;
+    if (sectionId !== null && !section) reject("section_not_found", "Section no longer exists");
+    const hostId = change.hostId ?? current!.hostId;
+    if ((!current || hostId !== current.hostId) && !(await bb.sdk.hosts.list()).some((host) => host.id === hostId)) reject("machine_not_found", "Choose an enrolled execution machine");
+
+    const linkedProjectIds = change.linkedProjectIds ?? current?.linkedProjectIds ?? [];
+    // Unlinking a project without naming owners releases its ownership, as the store does.
+    const ownedProjectIds = change.ownedProjectIds ?? previousOwned.filter((id) => linkedProjectIds.includes(id));
+    const linkChecks = current
+      ? [...(same(linkedProjectIds, current.linkedProjectIds) ? [] : [linkedProjectIds]), ownedProjectIds.filter((id) => !previousOwned.includes(id))]
+      : [linkedProjectIds, ownedProjectIds];
+    for (const ids of linkChecks) {
+      const problem = ids.length ? await linkProblem(ids) : null;
+      if (problem) reject("invalid_project", problem);
+    }
+    if (new Set(ownedProjectIds).size !== ownedProjectIds.length || ownedProjectIds.some((id) => !linkedProjectIds.includes(id))) reject("invalid_project", "Every owned project must be linked exactly once");
+    for (const projectId of ownedProjectIds) {
+      const owner = store.projectOwner(projectId);
+      if (owner && owner.botId !== current?.id) reject("project_owned", `Project already owned by ${store.get(owner.botId)?.name ?? owner.botId}. Release that ownership first.`);
+    }
+
+    const base: BotMetadata = current ?? {
+      id: "", name, role, hostId, stateReady: true, legacyHomeProjectId: null, avatar: change.avatar!, sectionId, linkedProjectIds, soul, agents: "", memory: "", settings: {},
+      stateHashes: { ...EMPTY_HASHES }, order: 0, mainThreadId: null, hiddenUntilActivity: false, hiddenAt: null, updatedAt: 0, legacyProjectId: null,
+    };
+    const hidden = change.hidden ?? base.hiddenUntilActivity;
+    let next: BotMetadata = { ...base, name, role, soul, hostId, sectionId, linkedProjectIds, avatar: change.avatar ?? base.avatar, hiddenUntilActivity: hidden };
+    if (change.launchPreset !== undefined) next.launchPreset = change.launchPreset;
+    try {
+      if (change.memory !== undefined) next = applyState(next, "MEMORY.md", change.memory);
+      if (change.settings !== undefined) next = applyState(next, "settings.json", stateContent({ ...next, settings: change.settings }, "settings.json"));
+    } catch (error) { reject("invalid_state", error instanceof Error ? error.message : String(error)); }
+    if (current && change.kind === "update" && change.expectedStateHashes) {
+      for (const file of STATE_FILES) {
+        if (stateContent(next, file) === stateContent(current, file)) continue;
+        if (current.stateHashes[file] !== change.expectedStateHashes[file]) throw new BotStateConflictError(`${file} changed while editing. Read the current state before saving.`);
       }
-      if (fields.hostId !== undefined && fields.hostId !== bot.hostId) await validateHost(fields.hostId);
-      validateSection(fields.sectionId);
-      const next = store.mutateWithProjects(botId, (current) => {
-        if (current.updatedAt !== expectedUpdatedAt) throw new Error("Bot changed while editing. Read the current identity before saving.");
-        let next = { ...current, ...fields };
-        if (memory !== undefined) next = applyState(next, "MEMORY.md", memory);
-        if (settings !== undefined) next = applyState(next, "settings.json", stateContent({ ...next, settings }, "settings.json"));
-        for (const file of ["SOUL.md", "MEMORY.md", "settings.json"] as const) {
-          if (stateContent(next, file) === stateContent(current, file)) continue;
-          if (current.stateHashes[file] !== expectedStateHashes[file]) throw new BotStateConflictError(`${file} changed while editing. Read the current state before saving.`);
-        }
+    }
+
+    const differs: Record<keyof BotFields, boolean> = {
+      name: name !== base.name, role: role !== base.role, soul: soul !== base.soul, hostId: hostId !== base.hostId,
+      avatar: !same(next.avatar, base.avatar), sectionId: sectionId !== base.sectionId,
+      linkedProjectIds: !same(linkedProjectIds, base.linkedProjectIds), ownedProjectIds: !sameSet(ownedProjectIds, previousOwned),
+      hidden: hidden !== base.hiddenUntilActivity, memory: next.memory !== base.memory,
+      settings: stateContent(next, "settings.json") !== stateContent(base, "settings.json"), launchPreset: !same(next.launchPreset, base.launchPreset),
+    };
+    const changed = (Object.keys(differs) as (keyof BotFields)[]).filter((key) => current ? differs[key] : change[key] !== undefined);
+    const names = new Map((await bb.sdk.projects.list()).map((project) => [project.id, project.name]));
+    const owned = new Set(ownedProjectIds);
+    const summary: BotChangeSummary = {
+      kind: change.kind, name, role, soul, sectionId, section: section?.name ?? null, linkedProjectIds, ownedProjectIds,
+      projects: linkedProjectIds.map((id) => ({ id, name: names.get(id) ?? "Unavailable project", owner: owned.has(id) })), hidden,
+      ...(current ? { previous: { name: current.name, role: current.role, soul: current.soul } } : {}),
+    };
+    return { current, next, ownedProjectIds, checked: { botId: current?.id ?? null, changed, summary } satisfies CheckedBotChange };
+  }
+
+  /** What a change would do, or a BotChangeRejected saying why it would fail. Writes nothing. */
+  async function checkBotChange(change: BotChange): Promise<CheckedBotChange> {
+    return (await draft(change)).checked;
+  }
+
+  /**
+   * Checks and makes a change. `confirm` sees the checked change before any
+   * write and may throw to stop it (the approval form); no lock is held while
+   * it runs. The change is then checked again under the locks.
+   */
+  async function applyBotChange(change: BotChange, { confirm }: { confirm?: (checked: CheckedBotChange) => Promise<void> } = {}): Promise<{ checked: CheckedBotChange; bot: BotMetadata }> {
+    if (confirm) await confirm(await checkBotChange(change));
+    if (change.kind === "create") {
+      return serial("registry", async () => {
+        await importLegacy();
+        const { next, ownedProjectIds, checked } = await draft(change);
+        const id = `bot_${randomUUID().replaceAll("-", "")}`;
+        store.saveWithProjects({ ...next, id, order: store.list().length, hiddenAt: next.hiddenUntilActivity ? Date.now() : null, updatedAt: Date.now() }, ownedProjectIds);
+        const bot = await state.prepare(id); publish();
+        return { checked: { ...checked, botId: id }, bot };
+      });
+    }
+    return serial("registry", () => serial(change.botId, async () => {
+      await state.prepare(change.botId);
+      const { current, next, checked } = await draft(change);
+      if (!checked.changed.length) return { checked, bot: current! };
+      const bot = store.mutateWithProjects(change.botId, (latest) => {
+        if (latest.updatedAt !== change.revision) throw new BotChangeRejected("bot_changed", "Bot changed while editing. Read the current identity before saving.");
         return {
           ...next,
+          hiddenAt: checked.changed.includes("hidden") ? (next.hiddenUntilActivity ? Date.now() : null) : latest.hiddenAt,
           stateHashes: {
-            ...current.stateHashes,
+            ...latest.stateHashes,
             "SOUL.md": sha256(next.soul),
-            ...(memory !== undefined ? { "MEMORY.md": sha256(next.memory) } : {}),
-            ...(settings !== undefined ? { "settings.json": sha256(stateContent(next, "settings.json")) } : {}),
+            ...(change.memory !== undefined ? { "MEMORY.md": sha256(next.memory) } : {}),
+            ...(change.settings !== undefined ? { "settings.json": sha256(stateContent(next, "settings.json")) } : {}),
           },
-          updatedAt: nextTimestamp(current.updatedAt),
+          updatedAt: nextTimestamp(latest.updatedAt),
         };
-      }, ownedProjectIds);
-      await state.mirror(next); publish(); return next;
+      }, checked.changed.includes("ownedProjectIds") ? change.ownedProjectIds : undefined);
+      await state.mirror(bot); publish();
+      return { checked, bot };
     }));
   }
 
@@ -110,17 +225,19 @@ export function createBotService({ bb, store, state, publish, importLegacy, seri
   }
 
   function createSection(name: string): Promise<BotSection> {
+    const checkedName = sectionName(name);
     return serial("registry", async () => {
       const saved = store.sections();
-      const section = { id: randomUUID(), name, order: saved.length };
+      const section = { id: randomUUID(), name: checkedName, order: saved.length };
       store.saveSections([...saved, section]); publish(); return section;
     });
   }
   function renameSection(sectionId: string, name: string): Promise<BotSection> {
+    const checkedName = sectionName(name);
     return serial("registry", async () => {
       const saved = store.sections(); const section = saved.find((entry) => entry.id === sectionId);
       if (!section) throw new Error("Section no longer exists");
-      const next = { ...section, name }; store.saveSections(saved.map((entry) => entry.id === sectionId ? next : entry)); publish(); return next;
+      const next = { ...section, name: checkedName }; store.saveSections(saved.map((entry) => entry.id === sectionId ? next : entry)); publish(); return next;
     });
   }
   /** Bots in the section move to Main; the bots themselves are untouched. */
@@ -132,6 +249,7 @@ export function createBotService({ bb, store, state, publish, importLegacy, seri
     });
   }
 
+  /** The sidebar's eye toggle: last write wins, like upstream's `visibility_set`. */
   function setVisibility(botId: string, hiddenUntilActivity: boolean): Promise<BotMetadata> {
     return serial(botId, async () => {
       const bot = store.require(botId);
@@ -158,9 +276,10 @@ export function createBotService({ bb, store, state, publish, importLegacy, seri
   }
 
   return {
+    checkBotChange, applyBotChange,
+    changeProjectRole, createSection, renameSection, deleteSection, setVisibility, startConversation,
+    // For upstream's RPC handlers and dispatch hook in server.ts.
     validateLinks, validateSection, validateConversationProject,
-    createBot, updateBot, changeProjectRole,
-    createSection, renameSection, deleteSection, setVisibility, startConversation,
   };
 }
 export type BotService = ReturnType<typeof createBotService>;

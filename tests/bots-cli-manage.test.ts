@@ -77,6 +77,37 @@ describe("bb bots create", () => {
     expect(host.store.list().map((bot) => bot.name)).toEqual(["Atlas", "Beryl"]);
   });
 
+  it("refuses to own a project another bot owns in dry-run and before asking anyone (BBP-47)", async () => {
+    const { host, run, pending } = await setup();
+    const beryl = await host.create("Beryl");
+    expect((await run(["projects", "own", beryl.id, "project"])).exitCode).toBe(0);
+    const dryRun = await run(["create", "Atlas", "--own", "project", "--dry-run", "--json"], { threadId: "agent" });
+    expect(dryRun.exitCode).toBe(1);
+    expect(parse(dryRun.stdout)).toMatchObject({ ok: false, error: { code: "project_owned", message: expect.stringContaining("Beryl") } });
+    const real = await run(["create", "Atlas", "--own", "project", "--json"], { threadId: "agent" });
+    expect(real.exitCode).toBe(1);
+    expect(parse(real.stdout)).toMatchObject({ ok: false, error: { code: "project_owned" } });
+    expect(pending()).toHaveLength(0);
+    expect(host.store.list().map((bot) => bot.name)).toEqual(["Beryl"]);
+  });
+
+  it("shows the approval form exactly the change that dry-run printed", async () => {
+    const { host, run, answer } = await setup();
+    const section = parse((await run(["sections", "create", "Research", "--json"])).stdout).section;
+    const argv = ["create", "Atlas", "--role", "Researcher", "--soul", "Be careful.", "--project", "other", "--own", "project", "--section", "Research", "--hidden", "--json"];
+    const { bot: dryRun } = parse((await run([...argv, "--dry-run"], { threadId: "agent" })).stdout);
+    expect(dryRun).toEqual({
+      kind: "create", name: "Atlas", role: "Researcher", soul: "Be careful.", sectionId: section.id, section: "Research", hidden: true,
+      linkedProjectIds: ["other", "project"], ownedProjectIds: ["project"],
+      projects: [{ id: "other", name: "Project other", owner: false }, { id: "project", name: "Project project", owner: true }],
+    });
+    const running = run(argv, { threadId: "agent" });
+    const request = await answer(true);
+    expect(request.payload).toEqual({ ...dryRun, requestedBy: { threadId: "agent", botName: null } });
+    expect((await running).exitCode).toBe(0);
+    expect(host.store.list()[0]).toMatchObject({ name: "Atlas", hiddenUntilActivity: true, sectionId: section.id });
+  });
+
   it("rejects invalid input before asking anyone", async () => {
     const { host, run, pending } = await setup();
     for (const argv of [["create", " "], ["create", "x".repeat(121)], ["create", "Atlas", "--soul", "x".repeat(4097)], ["create", "Atlas", "--project", "missing"], ["create", "Atlas", "--section", "missing"], ["create", "Atlas", "--machine", "missing"]]) {

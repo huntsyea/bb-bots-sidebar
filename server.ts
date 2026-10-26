@@ -125,7 +125,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (bot.updatedAt !== change.expectedRevision) throw new Error("Identity changed. Read identity again and merge your update.");
       const fields = { name: change.name ?? bot.name, role: change.role ?? bot.role, soul: change.soul ?? bot.soul };
       if (Object.entries(fields).every(([key, value]) => bot[key as keyof typeof fields] === value)) return { ...identityView(bot), changed: false };
-      const next = await botService.updateBot({ ...fields, botId, avatar: bot.avatar, sectionId: bot.sectionId, linkedProjectIds: bot.linkedProjectIds, expectedUpdatedAt: change.expectedRevision, expectedStateHashes: bot.stateHashes });
+      const { bot: next } = await botService.applyBotChange({ kind: "update", botId, revision: change.expectedRevision, ...fields });
       return { ...identityView(next), changed: true };
     }
     if (change.target === "project") {
@@ -250,9 +250,9 @@ export default async function plugin(bb: BbPluginApi) {
       const legacyHomes = new Set(bots.map((bot) => bot.legacyHomeProjectId));
       return { bots, projectOwners: store.projectOwners().map(({ projectId, botId }) => ({ projectId, botId })), warnings: [...warnings, ...state.warnings()], personalProjectId: personalId, threadBindings: store.bindings(), sections: store.sections(), hosts: hosts.map((host) => ({ id: host.id, name: host.name, connected: host.status === "connected" })), projects: projects.filter((project) => project.kind === "standard" && !legacyHomes.has(project.id)).map((project) => ({ id: project.id, name: project.name })) };
     },
-    bot_create: (input) => botService.createBot(input),
+    bot_create: async (input) => (await botService.applyBotChange({ kind: "create", ...input })).bot,
     bot_prepare: ({ botId }) => serial(botId, () => state.prepare(botId)),
-    bot_update: (input) => botService.updateBot(input),
+    bot_update: async ({ botId, expectedUpdatedAt, ...fields }) => (await botService.applyBotChange({ kind: "update", botId, revision: expectedUpdatedAt, ...fields })).bot,
     bots_reorder: ({ bots: placements }) => serial("registry", async () => {
       const bots = store.list();
       if (placements.length !== bots.length || new Set(placements.map((entry) => entry.botId)).size !== bots.length) throw new Error("Reordering must include every bot exactly once");
