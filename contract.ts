@@ -99,6 +99,10 @@ export const rpcContract = defineRpcContract({
   bot_create: { input: z.object({ ...editFields, hostId: id, launchPreset: launchPresetSchema.nullable().optional() }).strict(), output: metadataSchema },
   bot_update: { input: z.object({ ...editFields, hostId: id.optional(), launchPreset: launchPresetSchema.nullable().optional(), botId: id, expectedUpdatedAt: z.number(), expectedStateHashes: stateHashesSchema }).strict(), output: metadataSchema },
   bot_prepare: { input: z.object({ botId: id }).strict(), output: metadataSchema },
+  instructions_preview: {
+    input: z.object({ botId: id, projectId: id }).strict(),
+    output: z.object({ botId: id, projectId: id, mode: z.enum(["owner", "member", "unjoined", "personal", "legacy-home"]), instructions: z.string(), characters: z.number().int().nonnegative() }).strict(),
+  },
   bot_delete: {
     input: z.object({ botId: id, expectedUpdatedAt: z.number(), dryRun: z.boolean().optional() }).strict(),
     output: z.object({ summary: z.custom<BotChangeSummary>(), blockers: z.array(z.object({ code: z.string(), message: z.string() }).strict()), exportPath: z.string().nullable() }).strict(),

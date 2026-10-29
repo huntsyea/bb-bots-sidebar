@@ -14,6 +14,7 @@ import { botProjectContext } from "./lib/project-context";
 import { BOT_GUIDANCE, botInstructions } from "./lib/bot-instructions";
 import { MEMORY_MAX_CHARS, validateMemory } from "./lib/memory-limit";
 import { createSidebarMode } from "./lib/sidebar-mode";
+import { instructionsPreview } from "./lib/instructions-preview";
 export { rpcContract, avatarSchema } from "./contract";
 export type { BotAvatar, BotMetadata, BotSection, ProjectCreateInput } from "./contract";
 
@@ -223,6 +224,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     bot_create: async (input) => (await botService.applyBotChange({ kind: "create", ...input })).bot,
     bot_prepare: ({ botId }) => serial(botId, () => state.prepare(botId)),
+    instructions_preview: (input) => instructionsPreview(bb, store, input),
     bot_delete: async ({ botId, expectedUpdatedAt, dryRun }) => {
       const change = { kind: "delete", botId, revision: expectedUpdatedAt } as const;
       if (dryRun) { const checked = await botService.checkBotChange(change); return { summary: checked.summary, blockers: checked.blockers, exportPath: null }; }
