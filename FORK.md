@@ -151,19 +151,36 @@ the sync worktree. If the plugin cannot enable for backup, resolve that failure
 before proceeding; do not bypass backup isolation.
 Choose one data recovery method before reverting the code:
 
-- **Keep current bot edits:** run the command below against the disabled plugin's
-  database. It removes only top-level `launchPreset` keys, including JSON null,
-  in one transaction using `json_type(data,'$.launchPreset') IS NOT NULL`.
-  It prints the changed-row count; a repeat prints zero.
-  Bots deleted since the backup stay deleted; their exports in
-  `state/_deleted-bots/` remain the restore source.
-  Other fields and tables remain intact. This deliberately discards saved launch
-  defaults. It does not remove unrelated incompatible fields from future updates.
+- **Keep current bot edits:** run `rollback-presets` with the recorded rollback
+  revision against the disabled plugin's database, before restoring that code.
+  Run it from the main checkout, which still has the script (BBP-67, ADR-0004).
+  It strips launch presets **only when the target can't read them**:
+  - If `03daa73` is not an ancestor of the target, it strips every preset,
+    including JSON null.
+  - Otherwise it bundles the target's own `contract.ts` from Git and parses the
+    stored preset rows with the target's `metadataSchema`. It strips only the
+    rows whose `launchPreset` that schema rejects.
+  - If no row is rejected, it leaves every preset untouched and says so. Every
+    rollback target since `03daa73` (including `f693a2e`, `d58746c`, `3c8d018`,
+    `fb8e9b4` and `b8d94b2`) keeps real presets such as Frontier's.
+  - It refuses, changing nothing, if the target is unknown or its schema can't be
+    bundled or loaded; then decide by hand.
+  - A strip runs in one transaction and prints the changed-row count. Use
+    `--dry-run` first to see the decision.
+  - Bots deleted since the backup stay deleted; their exports in
+    `state/_deleted-bots/` remain the restore source.
+  - Other fields and tables remain intact. A note is printed if the target's
+    schema also rejects other fields; those need their own assessment.
 
   ```sh
-  bash "scripts/reload-safety.sh" strip-launch-presets \
+  bash "scripts/reload-safety.sh" rollback-presets "<rollback revision>" \
+    "$HOME/.bb/plugins/bots-sidebar/data.db" --dry-run
+  bash "scripts/reload-safety.sh" rollback-presets "<rollback revision>" \
     "$HOME/.bb/plugins/bots-sidebar/data.db"
   ```
+
+  `strip-launch-presets DATA_DB` remains as the unconditional manual strip; do
+  not use it for a rollback to a target that reads presets.
 
 - **Restore pre-update state:** with bots-sidebar disabled, preserve the entire
   current data directory in a separate recovery folder. Use SQLite `.restore` to restore the
@@ -174,12 +191,12 @@ Choose one data recovery method before reverting the code:
   combine a database and state directory from different backups. This discards
   bot changes made since the backup. Verify `PRAGMA integrity_check` returns `ok`.
 
-Only after the strip or restore, restore the recorded code revision in main,
+Only after `rollback-presets` or the restore, restore the recorded code revision in main,
 run `npm ci` and `npm run build`, then run
 `bb plugin enable bots-sidebar`. Verify the bot list, state, logs, and running
 status. Report the rollback result to Warden. A code-only rollback to `df530b0`
 or earlier is unsafe: the old strict metadataSchema rejects any `launchPreset`
-key, including JSON null. Private files are exports; after the strip, the
+key, including JSON null; `rollback-presets` strips for such targets. Private files are exports; after a strip, the
 restored code regenerates them from SQLite when state is prepared. The exception
 is `state/_deleted-bots/` (BBP-65): those exports are the only copy of deleted
 bots, so never delete or overwrite that folder during recovery.

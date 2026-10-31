@@ -4,7 +4,7 @@ umask 077
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 usage() {
-  fail "Usage: bash scripts/reload-safety.sh backup DATA_DIR BACKUP_ROOT | reload REF DATA_DIR BACKUP_ROOT | count-launch-presets DATA_DB | strip-launch-presets DATA_DB"
+  fail "Usage: bash scripts/reload-safety.sh backup DATA_DIR BACKUP_ROOT | reload REF DATA_DIR BACKUP_ROOT | count-launch-presets DATA_DB | strip-launch-presets DATA_DB | rollback-presets TARGET_REF DATA_DB [--dry-run]"
 }
 [[ $# -ge 1 ]] || usage
 command -v sqlite3 >/dev/null || fail "sqlite3 is required"
@@ -100,6 +100,88 @@ UPDATE bots SET data = json_remove(data, '$.launchPreset')
 WHERE json_type(data,'$.launchPreset') IS NOT NULL;
 SELECT changes();
 COMMIT;"
+    ;;
+  rollback-presets)
+    # Before restoring TARGET_REF's code, strip only the launch presets that the
+    # target cannot read (ADR-0004). 03daa73 is the first build that reads them.
+    [[ $# -eq 3 || ( $# -eq 4 && $4 == --dry-run ) ]] || usage
+    dry_run=false; [[ ${4:-} == --dry-run ]] && dry_run=true
+    db_dir=$(cd "$(dirname "$3")" && pwd -P)
+    database="$db_dir/$(basename "$3")"
+    [[ -f "$database" && ! -L "$database" ]] || fail "DATA_DB must be an existing regular database file"
+    repo=$(cd "$(dirname "$0")/.." && pwd -P)
+    command -v node >/dev/null || fail "node is required for the schema probe"
+    target=$(git -C "$repo" rev-parse --verify --quiet "$2^{commit}") || fail "Unknown rollback target: $2. Nothing was changed."
+    first_reader=$(git -C "$repo" rev-parse --verify --quiet "03daa73^{commit}") || fail "03daa73 is missing from $repo; fetch it first. Nothing was changed."
+    short=$(git -C "$repo" rev-parse --short "$target")
+    plural() { [[ $1 == 1 ]] && printf '%s launch preset' "$1" || printf '%s launch presets' "$1"; }
+    # Read-write open: with the plugin disabled, SQLite has removed the WAL
+    # sidecars and a read-only open would fail. Reads change nothing.
+    count=$(sqlite3 "$database" ".timeout 5000" "SELECT count(*) FROM bots WHERE json_type(data,'$.launchPreset') IS NOT NULL;")
+    if [[ $count == 0 ]]; then
+      printf '%s\n' "No launch presets stored; nothing to strip for target $short."
+      exit 0
+    fi
+    if ! git -C "$repo" merge-base --is-ancestor "$first_reader" "$target"; then
+      reason="Target $short predates launch presets: 03daa73 is not an ancestor, so it rejects every launchPreset key."
+      ids=all
+      strip_count=$count
+    else
+      probe=$(mktemp -d "${TMPDIR:-/tmp}/bots-sidebar-probe-XXXXXX")
+      trap 'rm -rf -- "$probe"' EXIT
+      # Bundle the target's own contract.ts and parse the stored rows with its metadataSchema.
+      git -C "$repo" archive "$target" | tar -x -C "$probe" || fail "Could not probe $short: git archive failed. Nothing was changed."
+      ln -s "$repo/node_modules" "$probe/node_modules"
+      "$repo/node_modules/.bin/rolldown" "$probe/contract.ts" --platform node --format esm --file "$probe/probe.mjs" --external zod,@get-bb/plugin-sdk >/dev/null 2>&1 \
+        || fail "Could not probe $short: its contract.ts did not bundle. Nothing was changed; decide by hand (ADR-0004)."
+      sqlite3 -json "$database" ".timeout 5000" "SELECT id, data FROM bots WHERE json_type(data,'$.launchPreset') IS NOT NULL;" > "$probe/rows.json"
+      verdict=$(node --input-type=module -e '
+        import { readFileSync } from "node:fs";
+        import { pathToFileURL } from "node:url";
+        const [bundle, rowsFile] = process.argv.slice(1);
+        const { metadataSchema } = await import(pathToFileURL(bundle).href);
+        if (typeof metadataSchema?.safeParse !== "function") process.exit(3);
+        const rows = JSON.parse(readFileSync(rowsFile, "utf8") || "[]");
+        const rejected = [];
+        let other = 0;
+        for (const row of rows) {
+          const result = metadataSchema.safeParse(JSON.parse(row.data));
+          if (result.success) continue;
+          const preset = result.error.issues.some((issue) => issue.path?.[0] === "launchPreset" || (issue.code === "unrecognized_keys" && issue.keys?.includes("launchPreset")));
+          if (preset) rejected.push(row.id); else other++;
+        }
+        // IDs go into SQL unquoted-safe only if they look like bot IDs; otherwise stop.
+        if (rejected.some((id) => typeof id !== "string" || !/^[A-Za-z0-9_-]+$/.test(id))) process.exit(4);
+        console.log(JSON.stringify({ rejected, other }));
+      ' "$probe/probe.mjs" "$probe/rows.json") || fail "Could not probe $short: its metadataSchema did not load. Nothing was changed; decide by hand (ADR-0004)."
+      ids=$(node -e 'process.stdout.write(JSON.stringify(JSON.parse(process.argv[1]).rejected))' "$verdict")
+      other=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).other))' "$verdict")
+      strip_count=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).length))' "$ids")
+      if [[ $other != 0 ]]; then
+        printf '%s\n' "Note: target $short's schema also rejects fields other than launchPreset in $other bot(s); assess those separately (ADR-0004)."
+      fi
+      if [[ $strip_count == 0 ]]; then
+        printf '%s\n' "Target $short reads launch presets: 03daa73 is an ancestor and its schema accepts launchPreset in all $count stored bot(s). Left $(plural "$count") untouched."
+        exit 0
+      fi
+      reason="Target $short descends from 03daa73 (03daa73 is an ancestor), but its schema rejects launchPreset in $strip_count of $count bot(s)."
+    fi
+    printf '%s\n' "$reason"
+    if [[ $dry_run == true ]]; then
+      printf '%s\n' "Would strip $(plural "$strip_count"). Nothing was changed (--dry-run)."
+      exit 0
+    fi
+    if [[ $ids == all ]]; then
+      where="json_type(data,'$.launchPreset') IS NOT NULL"
+    else
+      where="json_type(data,'$.launchPreset') IS NOT NULL AND id IN (SELECT value FROM json_each('$ids'))"
+    fi
+    # Call only with bots-sidebar disabled. A transaction makes the strip all-or-nothing.
+    changed=$(sqlite3 "$database" ".timeout 5000" "BEGIN IMMEDIATE;
+UPDATE bots SET data = json_remove(data, '$.launchPreset') WHERE $where;
+SELECT changes();
+COMMIT;")
+    printf '%s\n' "Stripped $(plural "$changed")."
     ;;
   *) usage;;
 esac
