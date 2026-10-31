@@ -65,13 +65,15 @@ pinned to `0.6.49`. Build metadata confirms BB `0.46.1`, SDK `0.6.49`, and plugi
 ID `bots-sidebar`.
 
 The installed main checkout and its output remain untouched during preparation.
-After Hunter approves, Warden must verify that no bot approval is pending,
-use the single-outage reload below for bots-sidebar last
+Before reloading, verify that no bot approval is pending and
+use the single-outage reload below
 under [ADR-0001](/Users/huntsyea/Dev/bb-plugins/docs/adr/0001-warden-reload-approval.md). Do not install from the worktree.
 
 ## Reload and rollback safety (BBP-15)
 
-Each future reload requires Hunter's approval through Warden. The script
+Since 2026-10-31, reloads of this fork need no approval from Hunter or Warden
+(ADR-0007): the Manager runs them with the ADR-0001 safety steps and reports the
+result to Warden afterwards. The script
 never stops BB or its database writer. Its reload command disables only
 bots-sidebar, backs up data, fast-forwards main, installs dependencies, builds,
 and enables the plugin once to load the new output. Its separate backup command
@@ -84,7 +86,7 @@ Read-only inspection on 2026-10-18 found the live directory at
 Recheck the installed source and data location before deployment. Backups contain
 private bot state. Keep them outside Git checkouts and do not attach them to tasks.
 
-### Before an approved reload
+### Before a reload
 
 1. Follow Warden's reload order: model-profiles, cursor-sidebar, then bots-sidebar.
    Check that no bot approval is pending. Record main's commit and confirm that
@@ -96,7 +98,7 @@ private bot state. Keep them outside Git checkouts and do not attach them to tas
    this main checkout, main is clean, bots-sidebar is enabled, no approval is
    pending, and no external process writes its data. Do not run concurrent
    backups, merges, builds, or plugin enable operations. Create an external backup
-   root, then run from the installed main checkout after approval:
+   root, then run from the installed main checkout:
 
    ```sh
    mkdir -p "$HOME/.bb/backups/bots-sidebar"
